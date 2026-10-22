@@ -3,6 +3,7 @@ use std::{fs, io, thread, time::Duration};
 use tauri::{AppHandle, Manager};
 
 use crate::{
+    events,
     paths::AppPaths,
     store::{now_ms, CaptureSettings, Store},
 };
@@ -20,8 +21,10 @@ pub fn spawn(app: AppHandle) {
                 .capture_settings()
                 .map_err(anyhow::Error::from)
                 .and_then(|s| cleanup(&store, &paths, &s, now_ms()));
-            if let Err(e) = result {
-                log::warn!("清理临时条目失败: {e:#}");
+            match result {
+                Ok(0) => {}
+                Ok(_) => events::clips_changed(&app),
+                Err(e) => log::warn!("清理临时条目失败: {e:#}"),
             }
             thread::sleep(INTERVAL);
         }
@@ -39,9 +42,8 @@ pub fn cleanup(store: &Store, paths: &AppPaths, settings: &CaptureSettings, now:
     } else {
         Default::default()
     };
-    for file in expired.image_files.iter().chain(&trimmed.image_files) {
-        remove_image(paths, file);
-    }
+    remove_images(paths, &expired.image_files);
+    remove_images(paths, &trimmed.image_files);
     if expired.rows > 0 || trimmed.rows > 0 {
         log::info!("已删除临时条目：过期 {} 条，超出上限 {} 条", expired.rows, trimmed.rows);
     }
@@ -62,6 +64,12 @@ pub fn sweep_orphan_images(store: &Store, paths: &AppPaths) -> anyhow::Result<us
         }
     }
     Ok(removed)
+}
+
+pub fn remove_images(paths: &AppPaths, files: &[String]) {
+    for file in files {
+        remove_image(paths, file);
+    }
 }
 
 fn remove_image(paths: &AppPaths, file: &str) {

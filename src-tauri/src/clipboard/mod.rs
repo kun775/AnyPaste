@@ -1,11 +1,114 @@
 mod capture;
 #[cfg(windows)]
+mod formats;
+#[cfg(windows)]
 mod reader;
 #[cfg(windows)]
 mod source;
+#[cfg(windows)]
+mod writer;
 
 #[cfg(windows)]
 pub use monitor::spawn;
+#[cfg(windows)]
+pub use writer::write;
+
+/// 读写真实的系统剪贴板，会临时覆盖当前内容，默认忽略：
+/// `cargo test -- --ignored --test-threads=1 clipboard::system_tests`
+#[cfg(all(test, windows))]
+mod system_tests {
+    use std::fs;
+
+    use clipboard_win::{formats as cf, raw};
+
+    use super::{formats, reader, writer};
+    use crate::store::{ClipContent, ClipKind};
+
+    fn content(kind: ClipKind, text: &str) -> ClipContent {
+        ClipContent { kind, text: Some(text.into()), html: None, rtf: None, image_file: None }
+    }
+
+    /// 测试结束后恢复原有的剪贴板文本。
+    fn with_saved_clipboard(test: impl FnOnce()) {
+        let saved = clipboard_win::get_clipboard_string().ok();
+        test();
+        if let Some(text) = saved {
+            let _ = clipboard_win::set_clipboard_string(&text);
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn rich_text_round_trip_and_marker_skip() {
+        with_saved_clipboard(|| {
+            let mut c = content(ClipKind::Rich, "AnyPaste 写回测试");
+            c.html = Some("<b>AnyPaste</b>".into());
+            c.rtf = Some(r"{\rtf1 AnyPaste}".into());
+            writer::write(c, false, std::path::Path::new(".")).unwrap();
+            // 带 AnyPaste 标记，监听器读取时应跳过
+            assert!(reader::read().unwrap().is_none());
+
+            let f = formats::formats();
+            let _guard = formats::open_with_retry().unwrap();
+            let mut text = Vec::new();
+            raw::get_string(&mut text).unwrap();
+            assert_eq!(String::from_utf8(text).unwrap(), "AnyPaste 写回测试");
+            let mut html = Vec::new();
+            raw::get_html(f.html.unwrap().get(), &mut html).unwrap();
+            assert!(String::from_utf8_lossy(&html).contains("<b>AnyPaste</b>"));
+            assert!(formats::avail(f.rtf));
+        });
+    }
+
+    #[test]
+    #[ignore]
+    fn plain_paste_drops_formatting() {
+        with_saved_clipboard(|| {
+            let mut c = content(ClipKind::Rich, "plain only");
+            c.html = Some("<i>plain only</i>".into());
+            writer::write(c, true, std::path::Path::new(".")).unwrap();
+            let _guard = formats::open_with_retry().unwrap();
+            assert!(raw::is_format_avail(cf::CF_UNICODETEXT));
+            assert!(!formats::avail(formats::formats().html));
+        });
+    }
+
+    #[test]
+    #[ignore]
+    fn files_round_trip() {
+        with_saved_clipboard(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let a = dir.path().join("a.txt");
+            fs::write(&a, "a").unwrap();
+            let path = a.display().to_string();
+            writer::write(content(ClipKind::Files, &path), false, dir.path()).unwrap();
+            let _guard = formats::open_with_retry().unwrap();
+            let mut files = Vec::new();
+            raw::get_file_list(&mut files).unwrap();
+            assert_eq!(files, vec![path]);
+        });
+    }
+
+    #[test]
+    #[ignore]
+    fn image_round_trip() {
+        with_saved_clipboard(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let img = image::RgbaImage::from_pixel(64, 32, image::Rgba([10, 120, 200, 255]));
+            img.save(dir.path().join("x.png")).unwrap();
+            let mut c = content(ClipKind::Image, "64×32");
+            c.image_file = Some("x.png".into());
+            writer::write(c, false, dir.path()).unwrap();
+
+            let _guard = formats::open_with_retry().unwrap();
+            assert!(formats::avail(formats::formats().png));
+            let mut bmp = Vec::new();
+            raw::get_bitmap(&mut bmp).unwrap();
+            let back = image::load_from_memory_with_format(&bmp, image::ImageFormat::Bmp).unwrap();
+            assert_eq!((back.width(), back.height()), (64, 32));
+        });
+    }
+}
 
 #[cfg(windows)]
 mod monitor {
@@ -16,7 +119,7 @@ mod monitor {
 
     use super::{capture, reader, source};
     use crate::{
-        janitor,
+        events, janitor,
         paths::AppPaths,
         state::AppState,
         store::{now_ms, Store},
@@ -96,6 +199,7 @@ mod monitor {
         if result.inserted {
             janitor::cleanup(&store, &paths, &settings, now)?;
         }
+        events::clips_changed(app);
         Ok(())
     }
 }

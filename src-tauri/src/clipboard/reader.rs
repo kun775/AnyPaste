@@ -1,50 +1,19 @@
-use std::{num::NonZeroU32, sync::OnceLock, thread, time::Duration};
+use std::num::NonZeroU32;
 
 use anyhow::Context;
-use clipboard_win::{formats, raw, Clipboard};
+use clipboard_win::{formats, raw};
 use image::ImageFormat;
 
-use super::capture::Captured;
-
-/// Windows 约定的隐私标记格式：密码管理器等程序用它声明内容不应被记录。
-const EXCLUDE_FROM_MONITOR: &str = "ExcludeClipboardContentFromMonitorProcessing";
-const CAN_INCLUDE_IN_HISTORY: &str = "CanIncludeInClipboardHistory";
-const VIEWER_IGNORE: &str = "Clipboard Viewer Ignore";
-/// AnyPaste 自己写回剪贴板时附带的标记，避免把粘贴操作再记录一次。
-const OWN_MARKER: &str = "AnyPaste.Internal";
-
-struct Formats {
-    html: Option<NonZeroU32>,
-    rtf: Option<NonZeroU32>,
-    png: Option<NonZeroU32>,
-    exclude: Option<NonZeroU32>,
-    can_include: Option<NonZeroU32>,
-    viewer_ignore: Option<NonZeroU32>,
-    own: Option<NonZeroU32>,
-}
-
-fn formats() -> &'static Formats {
-    static FORMATS: OnceLock<Formats> = OnceLock::new();
-    FORMATS.get_or_init(|| Formats {
-        html: raw::register_format("HTML Format"),
-        rtf: raw::register_format("Rich Text Format"),
-        png: raw::register_format("PNG"),
-        exclude: raw::register_format(EXCLUDE_FROM_MONITOR),
-        can_include: raw::register_format(CAN_INCLUDE_IN_HISTORY),
-        viewer_ignore: raw::register_format(VIEWER_IGNORE),
-        own: raw::register_format(OWN_MARKER),
-    })
-}
-
-fn avail(format: Option<NonZeroU32>) -> bool {
-    format.is_some_and(|f| raw::is_format_avail(f.get()))
-}
+use super::{
+    capture::Captured,
+    formats::{avail, formats as registered, open_with_retry, Formats},
+};
 
 /// 读取当前剪贴板。返回 `None` 表示内容被标记为隐私、为空或格式不支持。
 /// 优先级：文件列表 > 文本（含 HTML/RTF）> 图片。Office 复制文字时也会附带位图，所以文本优先于图片。
 pub fn read() -> anyhow::Result<Option<Captured>> {
     let _guard = open_with_retry()?;
-    let f = formats();
+    let f = registered();
 
     if is_private(f) {
         return Ok(None);
@@ -107,17 +76,4 @@ fn read_html(format: Option<NonZeroU32>) -> Option<String> {
 fn trim_nul(bytes: &[u8]) -> &[u8] {
     let end = bytes.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
     &bytes[..end]
-}
-
-/// 其他程序可能正占用剪贴板，按 10/20/40/80/160ms 退避重试。
-fn open_with_retry() -> anyhow::Result<Clipboard> {
-    let mut delay = Duration::from_millis(10);
-    for _ in 0..5 {
-        if let Ok(clip) = Clipboard::new() {
-            return Ok(clip);
-        }
-        thread::sleep(delay);
-        delay *= 2;
-    }
-    Clipboard::new().map_err(|e| anyhow::anyhow!("剪贴板被占用，无法打开: {e}"))
 }

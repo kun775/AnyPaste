@@ -1,5 +1,9 @@
 mod clipboard;
 mod commands;
+mod events;
+mod hotkey;
+#[cfg(windows)]
+mod input;
 mod janitor;
 mod paths;
 mod state;
@@ -34,12 +38,20 @@ pub fn run() {
                 .timezone_strategy(TimezoneStrategy::UseLocal)
                 .build(),
         )
+        .plugin(hotkey::plugin())
         .manage(AppState::default())
         .manage(paths)
         .invoke_handler(tauri::generate_handler![
             commands::hide_popup,
             commands::open_settings,
             commands::is_paused,
+            commands::list_clips,
+            commands::clip_counts,
+            commands::paste_clip,
+            commands::copy_clip,
+            commands::set_permanent,
+            commands::delete_clip,
+            commands::clear_temp,
             commands::app_info,
         ])
         .setup(|app| {
@@ -59,6 +71,7 @@ pub fn run() {
             janitor::spawn(app.handle().clone());
             #[cfg(windows)]
             clipboard::spawn(app.handle().clone());
+            hotkey::register(app.handle());
             Ok(())
         })
         .build(tauri::generate_context!())

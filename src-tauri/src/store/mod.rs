@@ -1,4 +1,5 @@
 mod clips;
+mod list;
 mod settings;
 
 use std::{
@@ -10,13 +11,17 @@ use std::{
 use anyhow::{bail, Context};
 use rusqlite::Connection;
 
-pub use clips::{ClipKind, NewClip};
+pub use clips::{ClipContent, ClipKind, NewClip};
+pub use list::{ClipItem, Counts, Cursor};
 #[cfg(test)]
 pub(crate) use clips::tests as clips_tests;
 pub use settings::CaptureSettings;
 
 /// 按顺序执行的迁移脚本，版本号记录在 `PRAGMA user_version`。
-const MIGRATIONS: &[&str] = &[include_str!("migrations/001_init.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("migrations/001_init.sql"),
+    include_str!("migrations/002_fts.sql"),
+];
 
 /// SQLite 存储。连接用互斥锁串行化，剪贴板监听、清理线程和前端命令共用。
 pub struct Store {

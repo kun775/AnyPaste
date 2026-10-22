@@ -16,6 +16,7 @@
   --perm: #c27c00;
   --perm-soft: rgba(230, 160, 20, 0.14);
   --danger: #c42b1c;
+  --danger-soft: rgba(196, 43, 28, 0.1);
   color-scheme: light dark;
 }
 
@@ -35,6 +36,7 @@
     --perm: #f2b84b;
     --perm-soft: rgba(242, 184, 75, 0.14);
     --danger: #ff6b5e;
+    --danger-soft: rgba(255, 107, 94, 0.14);
   }
 }
 

@@ -21,6 +21,26 @@ impl ClipKind {
             Self::Files => "files",
         }
     }
+
+    fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "text" => Self::Text,
+            "rich" => Self::Rich,
+            "image" => Self::Image,
+            "files" => Self::Files,
+            _ => return None,
+        })
+    }
+}
+
+/// 写回剪贴板所需的完整内容。
+#[derive(Debug, Clone)]
+pub struct ClipContent {
+    pub kind: ClipKind,
+    pub text: Option<String>,
+    pub html: Option<String>,
+    pub rtf: Option<String>,
+    pub image_file: Option<String>,
 }
 
 /// 一次采集得到、待入库的条目。
@@ -118,6 +138,64 @@ impl Store {
              ) RETURNING image_file",
         )?;
         deleted(&mut stmt, params![keep as i64])
+    }
+
+    pub fn clip_content(&self, id: i64) -> rusqlite::Result<Option<ClipContent>> {
+        let row = self.conn().query_row(
+            "SELECT kind, text, html, rtf, image_file FROM clips WHERE id = ?1 AND deleted_at IS NULL",
+            [id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    ClipContent {
+                        kind: ClipKind::Text,
+                        text: r.get(1)?,
+                        html: r.get(2)?,
+                        rtf: r.get(3)?,
+                        image_file: r.get(4)?,
+                    },
+                ))
+            },
+        );
+        match row {
+            Ok((kind, content)) => Ok(ClipKind::parse(&kind).map(|kind| ClipContent { kind, ..content })),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// 从列表中粘贴或复制后置顶，并重新开始计算过期时间。返回条目是否存在。
+    pub fn touch(&self, id: i64, now: i64, ttl_ms: i64) -> rusqlite::Result<bool> {
+        let n = self.conn().execute(
+            "UPDATE clips SET last_copied_at = ?2, updated_at = ?2,
+               expires_at = CASE WHEN is_permanent = 1 THEN NULL ELSE ?3 END
+             WHERE id = ?1 AND deleted_at IS NULL",
+            params![id, now, now.saturating_add(ttl_ms)],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// 设为永久（不再过期），或转为临时（从现在起重新计时）。返回条目是否存在。
+    pub fn set_permanent(&self, id: i64, permanent: bool, now: i64, ttl_ms: i64) -> rusqlite::Result<bool> {
+        let expires = (!permanent).then(|| now.saturating_add(ttl_ms));
+        let n = self.conn().execute(
+            "UPDATE clips SET is_permanent = ?2, expires_at = ?3, updated_at = ?4
+             WHERE id = ?1 AND deleted_at IS NULL",
+            params![id, permanent, expires, now],
+        )?;
+        Ok(n > 0)
+    }
+
+    pub fn delete_clip(&self, id: i64) -> rusqlite::Result<Deleted> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("DELETE FROM clips WHERE id = ?1 RETURNING image_file")?;
+        deleted(&mut stmt, params![id])
+    }
+
+    pub fn clear_temp(&self) -> rusqlite::Result<Deleted> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("DELETE FROM clips WHERE is_permanent = 0 RETURNING image_file")?;
+        deleted(&mut stmt, [])
     }
 
     /// 所有仍被引用的图片文件名，用于清理孤立文件。
@@ -265,6 +343,56 @@ pub(crate) mod tests {
         assert_eq!(removed, Deleted { rows: 2, image_files: vec!["b.png".into(), "c.png".into()] });
         assert_eq!(count(&store), 2);
         assert_eq!(store.trim_temp(2).unwrap(), Deleted::default());
+    }
+
+    #[test]
+    fn content_round_trips() {
+        let store = Store::open_in_memory().unwrap();
+        let mut c = text_clip("hi");
+        c.kind = ClipKind::Rich;
+        c.html = Some("<b>hi</b>".into());
+        let id = store.upsert_clip(&c, 0, TTL).unwrap().id;
+        let got = store.clip_content(id).unwrap().unwrap();
+        assert_eq!(got.kind, ClipKind::Rich);
+        assert_eq!(got.text.as_deref(), Some("hi"));
+        assert_eq!(got.html.as_deref(), Some("<b>hi</b>"));
+        assert!(store.clip_content(id + 100).unwrap().is_none());
+    }
+
+    #[test]
+    fn touch_bumps_and_restarts_ttl() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store.upsert_clip(&text_clip("a"), 0, TTL).unwrap().id;
+        assert!(store.touch(id, 700, TTL).unwrap());
+        assert_eq!(row(&store, id), ("text".into(), 0, 700, Some(1700), None));
+        assert!(!store.touch(id + 1, 700, TTL).unwrap());
+    }
+
+    #[test]
+    fn toggle_permanent() {
+        let store = Store::open_in_memory().unwrap();
+        let id = store.upsert_clip(&text_clip("a"), 0, TTL).unwrap().id;
+        store.set_permanent(id, true, 100, TTL).unwrap();
+        assert_eq!(row(&store, id).1, 1);
+        assert_eq!(row(&store, id).3, None);
+        // 转回临时：从此刻起重新计时，复制时间不变
+        store.set_permanent(id, false, 5000, TTL).unwrap();
+        assert_eq!(row(&store, id), ("text".into(), 0, 0, Some(6000), None));
+    }
+
+    #[test]
+    fn delete_and_clear_temp() {
+        let store = Store::open_in_memory().unwrap();
+        let mut img = text_clip("img");
+        img.image_file = Some("img.png".into());
+        let a = store.upsert_clip(&img, 0, TTL).unwrap().id;
+        store.upsert_clip(&text_clip("b"), 0, TTL).unwrap();
+        let perm = store.upsert_clip(&text_clip("p"), 0, TTL).unwrap().id;
+        store.set_permanent(perm, true, 0, TTL).unwrap();
+
+        assert_eq!(store.delete_clip(a).unwrap(), Deleted { rows: 1, image_files: vec!["img.png".into()] });
+        assert_eq!(store.clear_temp().unwrap().rows, 1);
+        assert_eq!(count(&store), 1);
     }
 
     #[test]

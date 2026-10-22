@@ -10,7 +10,7 @@ const TOOLTIP: &str = "AnyPaste";
 const TOOLTIP_PAUSED: &str = "AnyPaste（已暂停记录）";
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, "open", "打开剪贴板历史", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", "打开剪贴板历史", true, Some("Alt+V"))?;
     let pause = CheckMenuItem::with_id(app, "pause", "暂停记录", true, false, None::<&str>)?;
     // 同步（M5）与开机启动（M4）尚未实现，先占位并禁用
     let sync = MenuItem::with_id(app, "sync", "立即同步", false, None::<&str>)?;
@@ -42,7 +42,8 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id().as_ref() {
-            "open" => windows::show_popup(app),
+            // 从托盘打开时前台是任务栏，没有可粘贴的目标窗口，选中条目只复制
+            "open" => windows::show_popup(app, None),
             "pause" => set_paused(app, pause.is_checked().unwrap_or(false)),
             "settings" => windows::show_settings(app),
             "quit" => {
@@ -58,7 +59,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
                 ..
             } = event
             {
-                windows::show_popup(tray.app_handle());
+                windows::show_popup(tray.app_handle(), None);
             }
         })
         .build(app)?;
