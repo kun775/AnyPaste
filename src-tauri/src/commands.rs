@@ -11,6 +11,7 @@ use crate::{
     settings::{Settings, SettingsState},
     state::AppState,
     store::{now_ms, ClipItem, Counts, Cursor, Store},
+    sync::{self, SecretsInput, SyncConfig, SyncService, SyncStatus},
     windows,
 };
 
@@ -128,7 +129,14 @@ pub async fn set_permanent(
 
 #[tauri::command]
 pub async fn delete_clip(app: AppHandle, store: State<'_, Store>, paths: State<'_, AppPaths>, id: i64) -> CmdResult<()> {
-    let deleted = store.delete_clip(id).map_err(err)?;
+    // 开启同步时永久条目留下墓碑，以便把删除同步到其他设备
+    let tombstone = sync::is_enabled(&app) && store.is_permanent(id).map_err(err)?;
+    let deleted = if tombstone {
+        store.tombstone_clip(id, now_ms())
+    } else {
+        store.delete_clip(id)
+    }
+    .map_err(err)?;
     janitor::remove_images(&paths, &deleted.image_files);
     events::clips_changed(&app);
     Ok(())
@@ -236,6 +244,53 @@ pub async fn storage_stats(store: State<'_, Store>, paths: State<'_, AppPaths>) 
         bytes += entries.flatten().map(|e| file_size(&e.path())).sum::<u64>();
     }
     Ok(StorageStats { temp: counts.temp, perm: counts.perm, bytes })
+}
+
+/// 云同步设置页所需状态；凭据只返回是否已保存，不回传内容。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncView {
+    config: SyncConfig,
+    has_password: bool,
+    has_secret_key: bool,
+    has_passphrase: bool,
+    status: SyncStatus,
+}
+
+fn sync_view(app: &AppHandle) -> SyncView {
+    let secrets = sync::load_secrets();
+    SyncView {
+        config: sync::load_config(&app.state::<Store>()),
+        has_password: secrets.password.is_some(),
+        has_secret_key: secrets.secret_key.is_some(),
+        has_passphrase: secrets.passphrase.is_some(),
+        status: app.state::<SyncService>().status(),
+    }
+}
+
+#[tauri::command]
+pub async fn get_sync(app: AppHandle) -> SyncView {
+    sync_view(&app)
+}
+
+#[tauri::command]
+pub async fn save_sync(app: AppHandle, config: SyncConfig, secrets: SecretsInput) -> CmdResult<SyncView> {
+    sync::save(&app, config, &secrets).map_err(err)?;
+    Ok(sync_view(&app))
+}
+
+#[tauri::command]
+pub async fn test_sync(config: SyncConfig, secrets: SecretsInput) -> CmdResult<String> {
+    sync::test(config, &secrets).await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn sync_now(app: AppHandle) -> CmdResult<()> {
+    if !sync::is_enabled(&app) {
+        return Err("请先启用云同步".into());
+    }
+    sync::request(&app);
+    Ok(())
 }
 
 #[derive(Serialize)]

@@ -2,7 +2,7 @@
 // 仅在 `import.meta.env.DEV` 下被动态导入，不会进入生产包。
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
-import type { ClipItem, Cursor, Settings, Tab } from "./api";
+import type { ClipItem, Cursor, Settings, SyncConfig, SyncStatus, Tab } from "./api";
 
 const DEFAULT_SETTINGS: Settings = {
   closeToTray: true,
@@ -75,6 +75,28 @@ export function installMock(window: "popup" | "settings") {
   let autostart = false;
   let winVActive = false;
   const view = () => ({ settings, autostart, winVReleased: settings.takeOverWinV, winVActive });
+  let sync: SyncConfig = {
+    enabled: false,
+    backend: "webdav",
+    webdavEndpoint: "",
+    webdavUsername: "",
+    s3Endpoint: "",
+    s3Bucket: "",
+    s3Region: "auto",
+    s3AccessKeyId: "",
+    root: "/AnyPaste",
+    encrypt: true,
+    intervalMins: 15,
+  };
+  let saved = { password: false, secretKey: false, passphrase: false };
+  let syncStatus: SyncStatus = { state: "disabled", lastSyncAt: null, lastError: null, lastReport: null };
+  const syncView = () => ({
+    config: sync,
+    hasPassword: saved.password,
+    hasSecretKey: saved.secretKey,
+    hasPassphrase: saved.passphrase,
+    status: syncStatus,
+  });
   const visible = (tab: Tab, query: string | null) =>
     items
       .filter((i) => i.permanent === (tab === "perm"))
@@ -138,6 +160,37 @@ export function installMock(window: "popup" | "settings") {
         case "restart_explorer":
           winVActive = settings.takeOverWinV;
           return view();
+        case "get_sync":
+          return syncView();
+        case "test_sync": {
+          const c = args.config as SyncConfig;
+          if (!/^https?:\/\//.test(c.backend === "webdav" ? c.webdavEndpoint : c.s3Endpoint)) {
+            throw "服务器地址需以 http:// 或 https:// 开头";
+          }
+          return "连接成功，可读写；云端尚无数据";
+        }
+        case "save_sync": {
+          const s = args.secrets as Record<string, string>;
+          saved = {
+            password: s.password !== undefined ? !!s.password : saved.password,
+            secretKey: s.secretKey !== undefined ? !!s.secretKey : saved.secretKey,
+            passphrase: s.passphrase !== undefined ? !!s.passphrase : saved.passphrase,
+          };
+          const c = args.config as SyncConfig;
+          if (c.enabled && c.encrypt && !saved.passphrase) throw "已开启端到端加密，请填写同步口令";
+          sync = c;
+          syncStatus = { ...syncStatus, state: c.enabled ? "syncing" : "disabled" };
+          if (c.enabled) {
+            setTimeout(() => {
+              syncStatus = { state: "idle", lastSyncAt: Date.now(), lastError: null, lastReport: { uploaded: 2, downloaded: 1, deleted: 0 } };
+              emit("sync-status", syncStatus);
+            }, 300);
+          }
+          return syncView();
+        }
+        case "sync_now":
+          if (!sync.enabled) throw "请先启用云同步";
+          return null;
         case "storage_stats":
           return { temp: visible("temp", null).length, perm: visible("perm", null).length, bytes: 18_400_000 };
         case "app_info":

@@ -30,6 +30,7 @@
 - **常规**：开机启动、关闭窗口时最小化到托盘、暂停记录、永久复制通知、弹出位置、默认粘贴格式、主题。
 - **快捷键**：自定义两个热键（冲突时自动恢复原热键）；接管 `Win+V`（修改注册表 `DisabledHotkeys` 并重启资源管理器后生效，关闭即恢复系统热键）；永久复制改用 `Ctrl+Insert` 的终端程序列表。
 - **存储**：临时条目保留时长（修改后对已有条目生效）、数量上限、单条大小上限、记录的内容类型、忽略的应用、清空临时历史。
+- **云同步**：把永久条目同步到 WebDAV（坚果云、Nextcloud 等）或 S3 兼容存储（AWS S3、Cloudflare R2、MinIO、阿里云 OSS 等）。可开启端到端加密，所有设备需使用相同的同步口令。密码与口令保存在 Windows 凭据管理器中。同步设计见 [docs/PLAN.md](docs/PLAN.md#33-云同步设计)。
 
 ## 环境要求
 
@@ -62,7 +63,13 @@ Rust 编译会嵌入前端产物 `dist/`，因此 clippy 和测试之前需要�
 读写真实系统剪贴板的测试默认跳过（会临时覆盖剪贴板内容，结束后恢复文本），需要时单独运行：
 
 ```bash
-cargo test --manifest-path src-tauri/Cargo.toml -- --ignored --test-threads=1
+cargo test --manifest-path src-tauri/Cargo.toml -- --ignored --test-threads=1 clipboard
+```
+
+同步引擎的单元测试使用内存存储模拟多台设备。针对真实 WebDAV 服务器的测试默认跳过，设置环境变量 `ANYPASTE_TEST_WEBDAV`（以及可选的 `ANYPASTE_TEST_WEBDAV_USER`、`ANYPASTE_TEST_WEBDAV_PASS`）后运行，测试数据写在随机目录中并在结束时删除：
+
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml -- --ignored webdav
 ```
 
 ## 打包
@@ -85,6 +92,7 @@ npm run tauri build -- --bundles nsis
 | `src-tauri/src/input.rs` | 记录前台窗口、模拟 Ctrl+V 粘贴与复制 |
 | `src-tauri/src/settings.rs`、`prefs.rs` | 设置模型与校验；设置变更的统一入口（热键、托盘、过期时间同步） |
 | `src-tauri/src/hotkey.rs`、`winv.rs`、`permanent.rs` | 全局热键、接管 Win+V、永久复制流程 |
+| `src-tauri/src/sync/` | 云同步：配置与凭据、后台调度（`mod.rs`）、同步引擎（`engine.rs`）、加密（`crypto.rs`） |
 | `src-tauri/src/store/` | SQLite 存储、迁移脚本、采集设置 |
 | `src-tauri/src/janitor.rs` | 过期与超量临时条目清理、孤立图片清理 |
 

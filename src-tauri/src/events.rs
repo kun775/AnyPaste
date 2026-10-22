@@ -13,6 +13,8 @@ pub fn clips_changed(app: &AppHandle) {
     if let Err(e) = app.emit(CLIPS_CHANGED, ()) {
         log::warn!("发送 {CLIPS_CHANGED} 事件失败: {e}");
     }
+    // 永久条目若有变化，防抖后同步到云端（同步服务会比对指纹，无变化时跳过）
+    crate::sync::mark_dirty(app);
 }
 
 pub fn popup_shown(app: &AppHandle) {

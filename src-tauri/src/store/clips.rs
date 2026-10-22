@@ -87,6 +87,7 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?13, ?11, ?11, ?12, ?11)
              ON CONFLICT (content_hash) DO UPDATE SET
                kind = excluded.kind,
+               text = excluded.text,
                html = excluded.html,
                rtf = excluded.rtf,
                image_file = excluded.image_file,

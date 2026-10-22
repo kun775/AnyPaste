@@ -12,6 +12,7 @@ mod prefs;
 mod settings;
 mod state;
 mod store;
+mod sync;
 mod tray;
 mod windows;
 #[cfg(windows)]
@@ -69,6 +70,10 @@ pub fn run() {
             commands::restart_explorer,
             commands::open_data_dir,
             commands::storage_stats,
+            commands::get_sync,
+            commands::save_sync,
+            commands::test_sync,
+            commands::sync_now,
             commands::app_info,
         ])
         .setup(|app| {
@@ -86,9 +91,11 @@ pub fn run() {
             app.manage(SettingsState::new(settings.clone()));
             app.state::<AppState>().set_paused(settings.paused);
 
-            tray::create(app.handle(), &settings, prefs::autostart_enabled(app.handle()))?;
+            let sync_on = sync::load_config(&app.state::<Store>()).enabled;
+            tray::create(app.handle(), &settings, prefs::autostart_enabled(app.handle()), sync_on)?;
             windows::setup_popup(app.handle())?;
             janitor::spawn(app.handle().clone());
+            sync::spawn(app.handle().clone());
             #[cfg(windows)]
             clipboard::spawn(app.handle().clone());
             // 热键冲突不影响启动，仍可从托盘使用，并可在设置中更换

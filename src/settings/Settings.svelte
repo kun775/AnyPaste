@@ -21,13 +21,15 @@
   import { applyTheme } from "../lib/theme";
   import AppList from "./AppList.svelte";
   import HotkeyInput from "./HotkeyInput.svelte";
+  import SyncPane from "./SyncPane.svelte";
 
-  type Pane = "general" | "keys" | "storage" | "about";
+  type Pane = "general" | "keys" | "storage" | "sync" | "about";
 
   const PANES: { id: Pane; label: string }[] = [
     { id: "general", label: "常规" },
     { id: "keys", label: "快捷键" },
     { id: "storage", label: "存储" },
+    { id: "sync", label: "云同步" },
     { id: "about", label: "关于" },
   ];
 
@@ -279,6 +281,9 @@
         <div class="rt"><b>清空临时历史</b><small>永久条目不受影响</small></div>
         <button class="btn danger" disabled={!stats?.temp} onclick={() => (confirmClear = true)}>清空</button>
       </div>
+    {:else if pane === "sync"}
+      <h1>云同步</h1>
+      <SyncPane toast={showToast} />
     {:else}
       <h1>关于</h1>
       <div class="row">
@@ -349,129 +354,6 @@
     padding: 16px 24px 24px 8px;
     scrollbar-width: thin;
   }
-  h1 {
-    margin: 4px 0 14px;
-    font-size: 22px;
-    font-weight: 600;
-  }
-  h2 {
-    margin: 18px 0 6px;
-    font-size: 13px;
-    font-weight: 600;
-  }
-  .row {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    min-height: 60px;
-    padding: 12px 16px;
-    margin-bottom: 3px;
-    border-radius: 6px;
-    border: 1px solid var(--line);
-    background: var(--card);
-  }
-  .row.col {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 10px;
-  }
-  .line {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-  }
-  .rt {
-    flex: 1;
-    min-width: 0;
-  }
-  .rt b {
-    display: block;
-    font-weight: 500;
-    font-size: 13.5px;
-  }
-  .rt small {
-    display: block;
-    margin-top: 2px;
-    font-size: 12px;
-    line-height: 1.5;
-    color: var(--ink-2);
-  }
-  .path {
-    font-family: var(--mono);
-    user-select: text;
-    word-break: break-all;
-  }
-  select {
-    min-width: 150px;
-    height: 32px;
-    padding: 0 8px;
-    border-radius: 6px;
-    border: 1px solid var(--line-strong);
-    background: var(--surface);
-    font-size: 13px;
-  }
-  .btn {
-    height: 32px;
-    padding: 0 14px;
-    border-radius: 6px;
-    border: 1px solid var(--line-strong);
-    background: var(--card);
-    font-size: 13px;
-    white-space: nowrap;
-  }
-  .btn:hover:not(:disabled) {
-    background: var(--card-hover);
-  }
-  .btn:disabled {
-    opacity: 0.5;
-  }
-  .btn.danger {
-    color: var(--danger);
-  }
-  .switch {
-    position: relative;
-    flex: none;
-    width: 40px;
-    height: 20px;
-  }
-  .switch input {
-    position: absolute;
-    inset: 0;
-    z-index: 1;
-    margin: 0;
-    opacity: 0;
-    cursor: pointer;
-  }
-  .switch span {
-    position: absolute;
-    inset: 0;
-    border-radius: 10px;
-    border: 1px solid var(--ink-2);
-    transition: 0.15s;
-  }
-  .switch span::after {
-    content: "";
-    position: absolute;
-    left: 4px;
-    top: 4px;
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: var(--ink-2);
-    transition: 0.15s;
-  }
-  .switch input:checked + span {
-    background: var(--accent);
-    border-color: var(--accent);
-  }
-  .switch input:checked + span::after {
-    left: 23px;
-    background: var(--accent-ink);
-  }
-  .switch input:focus-visible + span {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
-  }
   .note {
     display: flex;
     align-items: center;
@@ -521,12 +403,6 @@
     font-size: 12px;
     color: var(--ink-2);
   }
-  .muted {
-    color: var(--ink-2);
-  }
-  .error {
-    color: var(--danger);
-  }
   .toast {
     position: absolute;
     left: 50%;
@@ -559,9 +435,6 @@
     }
     .pane {
       padding: 8px 12px 16px;
-    }
-    .row {
-      flex-wrap: wrap;
     }
   }
 </style>

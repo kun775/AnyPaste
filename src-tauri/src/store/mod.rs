@@ -1,6 +1,7 @@
 mod clips;
 mod list;
 mod settings;
+mod sync;
 
 use std::{
     path::Path,
@@ -13,6 +14,9 @@ use rusqlite::Connection;
 
 pub use clips::{ClipContent, ClipKind, NewClip};
 pub use list::{ClipItem, Counts, Cursor};
+pub use sync::{ClipRecord, Fingerprint, LocalState};
+#[cfg(test)]
+pub(crate) use sync::tests as sync_tests;
 #[cfg(test)]
 pub(crate) use clips::tests as clips_tests;
 

@@ -68,6 +68,51 @@ export interface SettingsView {
   winVActive: boolean;
 }
 
+export type SyncBackend = "webdav" | "s3";
+
+/** 与后端 sync::SyncConfig 字段一致。 */
+export interface SyncConfig {
+  enabled: boolean;
+  backend: SyncBackend;
+  webdavEndpoint: string;
+  webdavUsername: string;
+  s3Endpoint: string;
+  s3Bucket: string;
+  s3Region: string;
+  s3AccessKeyId: string;
+  root: string;
+  encrypt: boolean;
+  intervalMins: number;
+}
+
+export interface SyncReport {
+  uploaded: number;
+  downloaded: number;
+  deleted: number;
+}
+
+export interface SyncStatus {
+  state: "disabled" | "idle" | "syncing" | "error";
+  lastSyncAt: number | null;
+  lastError: string | null;
+  lastReport: SyncReport | null;
+}
+
+export interface SyncView {
+  config: SyncConfig;
+  hasPassword: boolean;
+  hasSecretKey: boolean;
+  hasPassphrase: boolean;
+  status: SyncStatus;
+}
+
+/** 省略的字段表示不修改，空字符串表示清除。 */
+export interface SecretsInput {
+  password?: string;
+  secretKey?: string;
+  passphrase?: string;
+}
+
 export interface StorageStats {
   temp: number;
   perm: number;
@@ -96,7 +141,14 @@ export const restartExplorer = () => invoke<SettingsView>("restart_explorer");
 export const openDataDir = () => invoke<void>("open_data_dir");
 export const storageStats = () => invoke<StorageStats>("storage_stats");
 
-export const onClipsChanged = (cb: () => void): Promise<UnlistenFn> => listen("clips-changed", cb);
+export const getSync = () => invoke<SyncView>("get_sync");
+export const saveSync = (config: SyncConfig, secrets: SecretsInput) => invoke<SyncView>("save_sync", { config, secrets });
+export const testSync = (config: SyncConfig, secrets: SecretsInput) => invoke<string>("test_sync", { config, secrets });
+export const syncNow = () => invoke<void>("sync_now");
+export const onSyncStatus = (cb: (s: SyncStatus) => void): Promise<UnlistenFn> =>
+  listen<SyncStatus>("sync-status", (e) => cb(e.payload));
+
+export const onClipsChanged =(cb: () => void): Promise<UnlistenFn> => listen("clips-changed", cb);
 export const onPopupShown = (cb: () => void): Promise<UnlistenFn> => listen("popup-shown", cb);
 export const onSettingsChanged = (cb: (s: Settings) => void): Promise<UnlistenFn> =>
   listen<Settings>("settings-changed", (e) => cb(e.payload));

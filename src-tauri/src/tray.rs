@@ -13,14 +13,14 @@ const TOOLTIP_PAUSED: &str = "AnyPaste（已暂停记录）";
 pub struct TrayMenu {
     open: MenuItem<Wry>,
     pause: CheckMenuItem<Wry>,
+    sync_now: MenuItem<Wry>,
     autostart: CheckMenuItem<Wry>,
 }
 
-pub fn create(app: &AppHandle, settings: &Settings, autostart_on: bool) -> tauri::Result<()> {
+pub fn create(app: &AppHandle, settings: &Settings, autostart_on: bool, sync_on: bool) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "打开剪贴板历史", true, None::<&str>)?;
     let pause = CheckMenuItem::with_id(app, "pause", "暂停记录", true, settings.paused, None::<&str>)?;
-    // TODO(M5): 接入云同步后启用
-    let sync_now = MenuItem::with_id(app, "sync", "立即同步", false, None::<&str>)?;
+    let sync_now = MenuItem::with_id(app, "sync", "立即同步", sync_on, None::<&str>)?;
     let autostart = CheckMenuItem::with_id(app, "autostart", "开机启动", true, autostart_on, None::<&str>)?;
     let settings_item = MenuItem::with_id(app, "settings", "设置…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出 AnyPaste", true, None::<&str>)?;
@@ -52,6 +52,7 @@ pub fn create(app: &AppHandle, settings: &Settings, autostart_on: bool) -> tauri
             // 从托盘打开时前台是任务栏，没有可粘贴的目标窗口，选中条目只复制
             "open" => windows::show_popup(app, None),
             "pause" => toggle_pause(app),
+            "sync" => crate::sync::request(app),
             "autostart" => toggle_autostart(app),
             "settings" => windows::show_settings(app),
             "quit" => {
@@ -72,7 +73,7 @@ pub fn create(app: &AppHandle, settings: &Settings, autostart_on: bool) -> tauri
         })
         .build(app)?;
 
-    app.manage(TrayMenu { open, pause, autostart });
+    app.manage(TrayMenu { open, pause, sync_now, autostart });
     sync(app, settings);
     Ok(())
 }
@@ -86,6 +87,13 @@ pub fn sync(app: &AppHandle, settings: &Settings) {
     let _ = menu.open.set_accelerator(Some(settings.hotkey_open.as_str()));
     if let Some(tray) = app.tray_by_id("main") {
         let _ = tray.set_tooltip(Some(if settings.paused { TOOLTIP_PAUSED } else { TOOLTIP }));
+    }
+}
+
+/// 只有启用云同步时“立即同步”可用。
+pub fn sync_cloud(app: &AppHandle, enabled: bool) {
+    if let Some(menu) = app.try_state::<TrayMenu>() {
+        let _ = menu.sync_now.set_enabled(enabled);
     }
 }
 

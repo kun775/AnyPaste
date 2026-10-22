@@ -29,10 +29,20 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 blake3 = "1.8"
 uuid = { version = "1.28", features = ["v4"] }
 image = { version = "0.25", default-features = false, features = ["png", "bmp"] }
+opendal = { version = "0.57", default-features = false, features = [
+  "services-webdav",
+  "services-s3",
+  "services-memory",
+  "reqwest-rustls-tls",
+] }
+aes-gcm = "0.10"
+argon2 = "0.5"
+tokio = { version = "1", features = ["sync", "time", "macros"] }
 
 [target.'cfg(windows)'.dependencies]
 clipboard-win = { version = "5.4", features = ["monitor", "std"] }
 winreg = "0.56"
+keyring = { version = "3", features = ["windows-native"] }
 windows = { version = "0.62", features = [
   "Win32_Foundation",
   "Win32_System_Threading",
@@ -42,6 +52,7 @@ windows = { version = "0.62", features = [
 
 [dev-dependencies]
 tempfile = "3"
+tokio = { version = "1", features = ["rt", "macros"] }
 
 [profile.release]
 codegen-units = 1

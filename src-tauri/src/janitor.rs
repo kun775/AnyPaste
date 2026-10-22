@@ -19,6 +19,10 @@ pub fn spawn(app: AppHandle) {
         let paths = app.state::<AppPaths>();
         loop {
             let settings = app.state::<SettingsState>().get().capture();
+            // 墓碑保留期与云端删除标记一致，过期后其他设备也已同步过删除
+            if let Err(e) = store.purge_tombstones(now_ms() - crate::sync::engine::TOMBSTONE_TTL_MS) {
+                log::warn!("清理删除记录失败: {e}");
+            }
             match cleanup(&store, &paths, &settings, now_ms()) {
                 Ok(0) => {}
                 Ok(_) => events::clips_changed(&app),
