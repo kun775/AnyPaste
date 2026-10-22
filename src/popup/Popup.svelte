@@ -6,21 +6,25 @@
     clipCounts,
     copyClip,
     deleteClip,
+    getSettings,
     hidePopup,
     isPaused,
     listClips,
     onClipsChanged,
     onPopupShown,
+    onSettingsChanged,
     openSettings,
     pasteClip,
     setPermanent,
     type ClipItem,
     type Counts,
+    type Settings,
     type Tab,
   } from "../lib/api";
+  import ConfirmDialog from "../lib/ConfirmDialog.svelte";
   import { icons } from "../lib/icons";
+  import { applyTheme } from "../lib/theme";
   import ClipRow from "./ClipRow.svelte";
-  import ConfirmDialog from "./ConfirmDialog.svelte";
   import ContextMenu, { type MenuEntry } from "./ContextMenu.svelte";
 
   interface Confirm {
@@ -44,6 +48,7 @@
   let menu = $state<{ x: number; y: number; entries: MenuEntry[] } | null>(null);
   let confirm = $state<Confirm | null>(null);
   let toast = $state<{ text: string; error: boolean } | null>(null);
+  let plainDefault = $state(false);
 
   let searchEl: HTMLInputElement | undefined = $state();
   let listEl: HTMLUListElement | undefined = $state();
@@ -99,10 +104,19 @@
     return () => clearTimeout(timer);
   });
 
+  function applySettings(s: Settings) {
+    plainDefault = s.plainPasteDefault;
+    applyTheme(s.theme);
+  }
+
   onMount(() => {
     const clock = setInterval(() => (now = Date.now()), 30_000);
+    getSettings()
+      .then((v) => applySettings(v.settings))
+      .catch(() => {});
     const unlisten = [
       onClipsChanged(reload),
+      onSettingsChanged(applySettings),
       onPopupShown(async () => {
         menu = null;
         confirm = null;
@@ -137,10 +151,11 @@
     await reload();
   }
 
-  async function paste(item: ClipItem | undefined, plain = false) {
+  /** `alternate` 为 true（Shift+Enter）时使用与默认相反的格式。 */
+  async function paste(item: ClipItem | undefined, alternate = false) {
     if (!item) return;
     try {
-      const { pasted } = await pasteClip(item.id, plain);
+      const { pasted } = await pasteClip(item.id, plainDefault !== alternate);
       if (!pasted) {
         showToast("已复制到剪贴板");
         sel = 0;
@@ -186,7 +201,8 @@
       { label: "粘贴", icon: icons.paste, shortcut: "Enter", run: () => paste(item) },
     ];
     if (item.rich || item.kind === "files") {
-      entries.push({ label: "以纯文本粘贴", icon: icons.plain, shortcut: "Shift+Enter", run: () => paste(item, true) });
+      const label = plainDefault ? "保留格式粘贴" : "以纯文本粘贴";
+      entries.push({ label, icon: icons.plain, shortcut: "Shift+Enter", run: () => paste(item, true) });
     }
     entries.push(
       { label: "仅复制", icon: icons.copy, run: () => run(() => copyClip(item.id), "已复制到剪贴板") },

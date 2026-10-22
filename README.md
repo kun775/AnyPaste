@@ -23,6 +23,14 @@
 | `Esc` | 清空搜索；再按一次关闭 |
 | 输入文字 | 搜索（3 个字符以上走全文索引） |
 
+### 设置
+
+托盘菜单「设置…」打开设置窗口，修改即时生效并保存在数据库中：
+
+- **常规**：开机启动、关闭窗口时最小化到托盘、暂停记录、永久复制通知、弹出位置、默认粘贴格式、主题。
+- **快捷键**：自定义两个热键（冲突时自动恢复原热键）；接管 `Win+V`（修改注册表 `DisabledHotkeys` 并重启资源管理器后生效，关闭即恢复系统热键）；永久复制改用 `Ctrl+Insert` 的终端程序列表。
+- **存储**：临时条目保留时长（修改后对已有条目生效）、数量上限、单条大小上限、记录的内容类型、忽略的应用、清空临时历史。
+
 ## 环境要求
 
 - Windows 10/11 x64（WebView2 运行时，系统一般已预装）
@@ -38,7 +46,7 @@ npm run tauri dev
 
 启动后只有托盘图标：左键单击打开剪贴板历史，右键打开菜单。重复启动不会产生第二个实例，而是打开已运行实例的设置窗口。
 
-调试弹窗界面时，可以在普通浏览器中打开 `http://localhost:1420/popup.html?mock`，使用内置的模拟数据，无需启动 Tauri（仅开发模式生效，不会进入生产包）。
+调试界面时，可以在普通浏览器中打开 `http://localhost:1420/popup.html?mock` 或 `settings.html?mock`，使用内置的模拟数据，无需启动 Tauri（仅开发模式生效，不会进入生产包）。
 
 ## 检查与测试
 
@@ -74,7 +82,9 @@ npm run tauri build -- --bundles nsis
 | `src/lib/` | 前端共享：命令封装 `api.ts`、主题令牌 `theme.css`、开发用模拟后端 `devMock.ts` |
 | `src-tauri/src/` | Rust 核心：托盘、窗口、命令、热键、事件、数据目录、运行时状态 |
 | `src-tauri/src/clipboard/` | 剪贴板监听、格式读取与写回、隐私标记过滤、入库前处理 |
-| `src-tauri/src/input.rs` | 记录前台窗口、模拟 Ctrl+V 粘贴回原窗口 |
+| `src-tauri/src/input.rs` | 记录前台窗口、模拟 Ctrl+V 粘贴与复制 |
+| `src-tauri/src/settings.rs`、`prefs.rs` | 设置模型与校验；设置变更的统一入口（热键、托盘、过期时间同步） |
+| `src-tauri/src/hotkey.rs`、`winv.rs`、`permanent.rs` | 全局热键、接管 Win+V、永久复制流程 |
 | `src-tauri/src/store/` | SQLite 存储、迁移脚本、采集设置 |
 | `src-tauri/src/janitor.rs` | 过期与超量临时条目清理、孤立图片清理 |
 

@@ -3,7 +3,10 @@ use std::{fs, io::Cursor, path::Path};
 use anyhow::Context;
 use image::{DynamicImage, ImageFormat};
 
-use crate::store::{ClipKind, NewClip};
+use crate::{
+    settings::Settings,
+    store::{ClipKind, NewClip},
+};
 
 /// 列表缩略图的最大尺寸（按 2 倍屏预留）。
 const THUMB_MAX: (u32, u32) = (360, 180);
@@ -21,6 +24,34 @@ pub enum Captured {
         bytes: Vec<u8>,
         format: ImageFormat,
     },
+}
+
+/// 设置中“记录的内容类型”。
+#[derive(Debug, Clone, Copy)]
+pub struct KindFilter {
+    pub text: bool,
+    pub rich: bool,
+    pub image: bool,
+    pub files: bool,
+}
+
+impl From<&Settings> for KindFilter {
+    fn from(s: &Settings) -> Self {
+        Self { text: s.capture_text, rich: s.capture_rich, image: s.capture_image, files: s.capture_files }
+    }
+}
+
+impl KindFilter {
+    /// 过滤掉未启用的类型；关闭富文本时只保留纯文本。
+    pub fn apply(self, captured: Captured) -> Option<Captured> {
+        match captured {
+            Captured::Files(_) if !self.files => None,
+            Captured::Image { .. } if !self.image => None,
+            Captured::Text { .. } if !self.text => None,
+            Captured::Text { text, .. } if !self.rich => Some(Captured::Text { text, html: None, rtf: None }),
+            other => Some(other),
+        }
+    }
 }
 
 /// 计算内容哈希、落盘图片并生成缩略图。内容超出大小上限时返回 `None`。
@@ -197,6 +228,20 @@ mod tests {
         let from_bmp = Captured::Image { bytes: encoded(&img, ImageFormat::Bmp), format: ImageFormat::Bmp };
         let again = prepare(from_bmp, None, dir.path(), MAX).unwrap().unwrap();
         assert_eq!(again.content_hash, clip.content_hash);
+    }
+
+    #[test]
+    fn kind_filter_drops_disabled_kinds() {
+        let all = KindFilter { text: true, rich: true, image: true, files: true };
+        let rich = || text("hi", Some("<b>hi</b>"));
+        assert!(matches!(all.apply(rich()), Some(Captured::Text { html: Some(_), .. })));
+
+        let no_rich = KindFilter { rich: false, ..all };
+        assert!(matches!(no_rich.apply(rich()), Some(Captured::Text { html: None, rtf: None, .. })));
+        assert!(KindFilter { text: false, ..all }.apply(rich()).is_none());
+        assert!(KindFilter { files: false, ..all }.apply(Captured::Files(vec!["a".into()])).is_none());
+        let img = Captured::Image { bytes: vec![], format: ImageFormat::Png };
+        assert!(KindFilter { image: false, ..all }.apply(img).is_none());
     }
 
     #[test]

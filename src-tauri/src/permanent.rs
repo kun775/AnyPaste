@@ -7,22 +7,10 @@ use tauri_plugin_notification::NotificationExt;
 
 use crate::{
     clipboard, events, input,
+    settings::SettingsState,
     state::AppState,
     store::{now_ms, Store},
 };
-
-/// 这些程序改用 Ctrl+Insert 复制（不区分大小写）。TODO(M4): 改为设置项。
-const TERMINALS: &[&str] = &[
-    "WindowsTerminal.exe",
-    "OpenConsole.exe",
-    "conhost.exe",
-    "cmd.exe",
-    "powershell.exe",
-    "pwsh.exe",
-    "wezterm-gui.exe",
-    "alacritty.exe",
-    "mintty.exe",
-];
 
 /// 等待目标程序响应复制、剪贴板序列号发生变化。
 const COPY_WAIT: Duration = Duration::from_millis(600);
@@ -63,7 +51,9 @@ pub fn trigger(app: &AppHandle) {
                 "永久保存失败，详情见日志"
             }
         };
-        notify(&worker, message);
+        if worker.state::<SettingsState>().get().notify_permanent {
+            notify(&worker, message);
+        }
     });
     if let Err(e) = spawned {
         log::error!("无法创建永久复制线程: {e}");
@@ -74,7 +64,8 @@ pub fn trigger(app: &AppHandle) {
 fn run(app: &AppHandle) -> anyhow::Result<Outcome> {
     let state = app.state::<AppState>();
     let before = clipboard::sequence();
-    let terminal = clipboard::foreground_app().is_some_and(|name| is_terminal(&name));
+    let prefs = app.state::<SettingsState>().get().clone();
+    let terminal = clipboard::foreground_app().is_some_and(|name| prefs.is_terminal(&name));
     // 标记有效期覆盖两段等待，避免等待尚未结束标记就自行过期
     state.arm_permanent(COPY_WAIT + CAPTURE_WAIT + Duration::from_secs(1));
     if let Err(e) = input::send_copy(terminal) {
@@ -97,31 +88,14 @@ fn run(app: &AppHandle) -> anyhow::Result<Outcome> {
     let Some(id) = store.latest_temp(now_ms())? else {
         return Ok(Outcome::Nothing);
     };
-    let ttl = store.capture_settings()?.ttl_ms;
-    store.set_permanent(id, true, now_ms(), ttl)?;
+    store.set_permanent(id, true, now_ms(), prefs.capture().ttl_ms)?;
     events::clips_changed(app);
     log::info!("永久复制未检测到新内容，已将条目 #{id} 设为永久");
     Ok(Outcome::PromotedLatest)
 }
 
-fn is_terminal(process: &str) -> bool {
-    TERMINALS.iter().any(|t| t.eq_ignore_ascii_case(process))
-}
-
 fn notify(app: &AppHandle, body: &str) {
     if let Err(e) = app.notification().builder().title("AnyPaste").body(body).show() {
         log::warn!("显示通知失败: {e}");
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn terminal_match_ignores_case() {
-        assert!(is_terminal("windowsterminal.exe"));
-        assert!(is_terminal("PWSH.EXE"));
-        assert!(!is_terminal("Code.exe"));
     }
 }

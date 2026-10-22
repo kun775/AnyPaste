@@ -5,7 +5,8 @@ use tauri::{AppHandle, Manager};
 use crate::{
     events,
     paths::AppPaths,
-    store::{now_ms, CaptureSettings, Store},
+    settings::{CaptureSettings, SettingsState},
+    store::{now_ms, Store},
 };
 
 /// 过期检查间隔。查询走索引，开销很小，间隔短可让过期时间更精确。
@@ -17,11 +18,8 @@ pub fn spawn(app: AppHandle) {
         let store = app.state::<Store>();
         let paths = app.state::<AppPaths>();
         loop {
-            let result = store
-                .capture_settings()
-                .map_err(anyhow::Error::from)
-                .and_then(|s| cleanup(&store, &paths, &s, now_ms()));
-            match result {
+            let settings = app.state::<SettingsState>().get().capture();
+            match cleanup(&store, &paths, &settings, now_ms()) {
                 Ok(0) => {}
                 Ok(_) => events::clips_changed(&app),
                 Err(e) => log::warn!("清理临时条目失败: {e:#}"),

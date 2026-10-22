@@ -8,15 +8,20 @@ mod janitor;
 mod paths;
 #[cfg(windows)]
 mod permanent;
+mod prefs;
+mod settings;
 mod state;
 mod store;
 mod tray;
 mod windows;
+#[cfg(windows)]
+mod winv;
 
 use tauri::{Manager, RunEvent};
+use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind, TimezoneStrategy};
 
-use crate::{paths::AppPaths, state::AppState, store::Store};
+use crate::{hotkey::Hotkeys, paths::AppPaths, settings::SettingsState, state::AppState, store::Store};
 
 pub fn run() {
     let paths = AppPaths::init().expect("无法创建数据目录");
@@ -42,7 +47,9 @@ pub fn run() {
         )
         .plugin(hotkey::plugin())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .manage(AppState::default())
+        .manage(Hotkeys::default())
         .manage(paths)
         .invoke_handler(tauri::generate_handler![
             commands::hide_popup,
@@ -55,6 +62,13 @@ pub fn run() {
             commands::set_permanent,
             commands::delete_clip,
             commands::clear_temp,
+            commands::get_settings,
+            commands::update_settings,
+            commands::set_autostart,
+            commands::suspend_hotkeys,
+            commands::restart_explorer,
+            commands::open_data_dir,
+            commands::storage_stats,
             commands::app_info,
         ])
         .setup(|app| {
@@ -67,14 +81,20 @@ pub fn run() {
                 Ok(n) => log::info!("清理孤立图片 {n} 个"),
                 Err(e) => log::warn!("清理孤立图片失败: {e:#}"),
             }
+            let settings = settings::load(&store);
             app.manage(store);
+            app.manage(SettingsState::new(settings.clone()));
+            app.state::<AppState>().set_paused(settings.paused);
 
-            tray::create(app.handle())?;
+            tray::create(app.handle(), &settings, prefs::autostart_enabled(app.handle()))?;
             windows::setup_popup(app.handle())?;
             janitor::spawn(app.handle().clone());
             #[cfg(windows)]
             clipboard::spawn(app.handle().clone());
-            hotkey::register_defaults(app.handle());
+            // 热键冲突不影响启动，仍可从托盘使用，并可在设置中更换
+            if let Err(e) = hotkey::apply(app.handle(), &settings) {
+                log::warn!("{e:#}");
+            }
             Ok(())
         })
         .build(tauri::generate_context!())

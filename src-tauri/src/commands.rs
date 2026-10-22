@@ -5,8 +5,10 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 
 use crate::{
-    events, janitor,
+    events, hotkey, janitor,
     paths::AppPaths,
+    prefs,
+    settings::{Settings, SettingsState},
     state::AppState,
     store::{now_ms, ClipItem, Counts, Cursor, Store},
     windows,
@@ -104,16 +106,22 @@ fn copy_to_clipboard(app: &AppHandle, id: i64, plain: bool) -> anyhow::Result<()
     crate::clipboard::write(content, plain, &app.state::<AppPaths>().images_dir)?;
     #[cfg(not(windows))]
     let _ = (content, plain);
-    let settings = store.capture_settings()?;
-    store.touch(id, now_ms(), settings.ttl_ms)?;
+    let ttl = app.state::<SettingsState>().get().capture().ttl_ms;
+    store.touch(id, now_ms(), ttl)?;
     events::clips_changed(app);
     Ok(())
 }
 
 #[tauri::command]
-pub async fn set_permanent(app: AppHandle, store: State<'_, Store>, id: i64, permanent: bool) -> CmdResult<()> {
-    let settings = store.capture_settings().map_err(err)?;
-    store.set_permanent(id, permanent, now_ms(), settings.ttl_ms).map_err(err)?;
+pub async fn set_permanent(
+    app: AppHandle,
+    store: State<'_, Store>,
+    prefs: State<'_, SettingsState>,
+    id: i64,
+    permanent: bool,
+) -> CmdResult<()> {
+    let ttl = prefs.get().capture().ttl_ms;
+    store.set_permanent(id, permanent, now_ms(), ttl).map_err(err)?;
     events::clips_changed(&app);
     Ok(())
 }
@@ -133,6 +141,101 @@ pub async fn clear_temp(app: AppHandle, store: State<'_, Store>, paths: State<'_
     log::info!("已清空临时条目 {} 条", deleted.rows);
     events::clips_changed(&app);
     Ok(deleted.rows)
+}
+
+/// 设置窗口所需的完整状态：用户设置 + 只能从系统读取的状态。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsView {
+    settings: Settings,
+    autostart: bool,
+    /// 注册表中已让出系统 Win+V。
+    win_v_released: bool,
+    /// 本程序已成功注册 Win+V。
+    win_v_active: bool,
+}
+
+fn settings_view(app: &AppHandle) -> SettingsView {
+    SettingsView {
+        settings: prefs::current(app),
+        autostart: prefs::autostart_enabled(app),
+        #[cfg(windows)]
+        win_v_released: crate::winv::is_released(),
+        #[cfg(not(windows))]
+        win_v_released: false,
+        win_v_active: app.state::<hotkey::Hotkeys>().win_v_active(),
+    }
+}
+
+#[tauri::command]
+pub async fn get_settings(app: AppHandle) -> SettingsView {
+    settings_view(&app)
+}
+
+#[tauri::command]
+pub async fn update_settings(app: AppHandle, settings: Settings) -> CmdResult<SettingsView> {
+    prefs::update(&app, settings).map_err(err)?;
+    Ok(settings_view(&app))
+}
+
+#[tauri::command]
+pub async fn set_autostart(app: AppHandle, enabled: bool) -> CmdResult<SettingsView> {
+    prefs::set_autostart(&app, enabled).map_err(err)?;
+    Ok(settings_view(&app))
+}
+
+/// 录制新热键期间暂停全部全局热键，结束后按当前设置恢复。
+#[tauri::command]
+pub async fn suspend_hotkeys(app: AppHandle, suspend: bool) -> CmdResult<()> {
+    if suspend {
+        hotkey::suspend(&app);
+        Ok(())
+    } else {
+        hotkey::apply(&app, &prefs::current(&app)).map_err(err)
+    }
+}
+
+#[tauri::command]
+pub async fn restart_explorer(app: AppHandle) -> CmdResult<SettingsView> {
+    #[cfg(windows)]
+    {
+        crate::winv::restart_explorer().map_err(err)?;
+        // 资源管理器启动并注册其热键需要一点时间，之后再重新注册 Win+V
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        hotkey::apply(&app, &prefs::current(&app)).map_err(err)?;
+    }
+    Ok(settings_view(&app))
+}
+
+#[tauri::command]
+pub async fn open_data_dir(paths: State<'_, AppPaths>) -> CmdResult<()> {
+    std::process::Command::new("explorer.exe")
+        .arg(&paths.data_dir)
+        .spawn()
+        .map_err(err)?;
+    Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageStats {
+    temp: usize,
+    perm: usize,
+    /// 数据库与图片文件占用的字节数。
+    bytes: u64,
+}
+
+#[tauri::command]
+pub async fn storage_stats(store: State<'_, Store>, paths: State<'_, AppPaths>) -> CmdResult<StorageStats> {
+    let counts = store.counts(now_ms()).map_err(err)?;
+    let file_size = |p: &std::path::Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    let mut bytes = file_size(&paths.db_file)
+        + file_size(&paths.db_file.with_extension("db-wal"))
+        + file_size(&paths.db_file.with_extension("db-shm"));
+    if let Ok(entries) = std::fs::read_dir(&paths.images_dir) {
+        bytes += entries.flatten().map(|e| file_size(&e.path())).sum::<u64>();
+    }
+    Ok(StorageStats { temp: counts.temp, perm: counts.perm, bytes })
 }
 
 #[derive(Serialize)]

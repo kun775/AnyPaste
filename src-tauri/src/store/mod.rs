@@ -15,7 +15,6 @@ pub use clips::{ClipContent, ClipKind, NewClip};
 pub use list::{ClipItem, Counts, Cursor};
 #[cfg(test)]
 pub(crate) use clips::tests as clips_tests;
-pub use settings::CaptureSettings;
 
 /// 按顺序执行的迁移脚本，版本号记录在 `PRAGMA user_version`。
 const MIGRATIONS: &[&str] = &[

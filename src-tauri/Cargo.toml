@@ -18,6 +18,8 @@ tauri-plugin-single-instance = "2.5"
 tauri-plugin-log = "2.10"
 tauri-plugin-global-shortcut = "2.3"
 tauri-plugin-notification = "2.3"
+tauri-plugin-autostart = "2.5"
+serde_json = "1"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 dirs = "6"
@@ -30,6 +32,7 @@ image = { version = "0.25", default-features = false, features = ["png", "bmp"] 
 
 [target.'cfg(windows)'.dependencies]
 clipboard-win = { version = "5.4", features = ["monitor", "std"] }
+winreg = "0.56"
 windows = { version = "0.62", features = [
   "Win32_Foundation",
   "Win32_System_Threading",
@@ -39,7 +42,6 @@ windows = { version = "0.62", features = [
 
 [dev-dependencies]
 tempfile = "3"
-serde_json = "1"
 
 [profile.release]
 codegen-units = 1

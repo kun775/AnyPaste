@@ -2,7 +2,11 @@ use tauri::{
     AppHandle, Manager, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
 
-use crate::{events, state::AppState};
+use crate::{
+    events,
+    settings::{PopupPosition, SettingsState},
+    state::AppState,
+};
 
 pub const POPUP: &str = "popup";
 pub const SETTINGS: &str = "settings";
@@ -45,7 +49,12 @@ pub fn show_popup(app: &AppHandle, target: Option<isize>) {
         return;
     };
     app.state::<AppState>().set_paste_target(target);
-    if let Err(e) = place_near_cursor(app, &popup) {
+    let position = app.state::<SettingsState>().get().popup_position;
+    let placed = match position {
+        PopupPosition::Cursor => place_near_cursor(app, &popup),
+        PopupPosition::Center => popup.center(),
+    };
+    if let Err(e) = placed {
         log::warn!("定位弹出列表失败: {e}");
         let _ = popup.center();
     }
@@ -90,7 +99,8 @@ fn place_near_cursor(app: &AppHandle, popup: &WebviewWindow) -> tauri::Result<()
     popup.set_position(PhysicalPosition::new(x, y))
 }
 
-/// 设置窗口按需创建，关闭即销毁以释放 WebView 内存；应用仍在托盘中运行。
+/// 设置窗口按需创建，关闭即销毁以释放 WebView 内存，应用仍在托盘中运行；
+/// 若关闭了“关闭窗口时最小化到托盘”，关闭设置窗口即退出程序。
 pub fn show_settings(app: &AppHandle) {
     if let Some(win) = app.get_webview_window(SETTINGS) {
         let _ = win.unminimize();
@@ -100,11 +110,22 @@ pub fn show_settings(app: &AppHandle) {
     }
     let built = WebviewWindowBuilder::new(app, SETTINGS, WebviewUrl::App("settings.html".into()))
         .title("AnyPaste 设置")
-        .inner_size(860.0, 600.0)
+        .inner_size(880.0, 620.0)
         .min_inner_size(640.0, 480.0)
         .center()
         .build();
-    if let Err(e) = built {
-        log::error!("创建设置窗口失败: {e}");
+    match built {
+        Ok(win) => {
+            let handle = app.clone();
+            win.on_window_event(move |event| {
+                if let WindowEvent::CloseRequested { .. } = event {
+                    if !handle.state::<SettingsState>().get().close_to_tray {
+                        log::info!("关闭设置窗口，按设置退出程序");
+                        handle.exit(0);
+                    }
+                }
+            });
+        }
+        Err(e) => log::error!("创建设置窗口失败: {e}"),
     }
 }

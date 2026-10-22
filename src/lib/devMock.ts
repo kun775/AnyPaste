@@ -1,7 +1,29 @@
 // 开发用模拟后端：在普通浏览器中打开 `popup.html?mock` 即可调试界面，无需启动 Tauri。
 // 仅在 `import.meta.env.DEV` 下被动态导入，不会进入生产包。
+import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
-import type { ClipItem, Cursor, Tab } from "./api";
+import type { ClipItem, Cursor, Settings, Tab } from "./api";
+
+const DEFAULT_SETTINGS: Settings = {
+  closeToTray: true,
+  paused: false,
+  theme: "system",
+  popupPosition: "cursor",
+  plainPasteDefault: false,
+  hotkeyOpen: "alt+v",
+  hotkeyPermanent: "ctrl+shift+c",
+  takeOverWinV: false,
+  notifyPermanent: true,
+  terminalApps: ["WindowsTerminal.exe", "conhost.exe", "pwsh.exe"],
+  ignoredApps: ["KeePassXC.exe", "1Password.exe"],
+  tempTtlSecs: 86400,
+  tempMaxItems: 500,
+  maxItemBytes: 10 * 1024 * 1024,
+  captureText: true,
+  captureRich: true,
+  captureImage: true,
+  captureFiles: true,
+};
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -47,15 +69,19 @@ function fixtures(): ClipItem[] {
   return list;
 }
 
-export function installMock() {
+export function installMock(window: "popup" | "settings") {
   let items = fixtures();
+  let settings = { ...DEFAULT_SETTINGS };
+  let autostart = false;
+  let winVActive = false;
+  const view = () => ({ settings, autostart, winVReleased: settings.takeOverWinV, winVActive });
   const visible = (tab: Tab, query: string | null) =>
     items
       .filter((i) => i.permanent === (tab === "perm"))
       .filter((i) => !query || i.preview.toLowerCase().includes(query.toLowerCase()))
       .sort((a, b) => b.lastCopiedAt - a.lastCopiedAt || b.id - a.id);
 
-  mockWindows("popup");
+  mockWindows(window);
   mockIPC(
     (cmd, payload) => {
       const args = (payload ?? {}) as Record<string, unknown>;
@@ -95,6 +121,27 @@ export function installMock() {
           items = items.filter((i) => i.permanent);
           return n;
         }
+        case "get_settings":
+          return view();
+        case "update_settings": {
+          const next = args.settings as Settings;
+          // 模拟后端校验：热键被占用
+          if (next.hotkeyOpen === "ctrl+alt+delete") throw "热键 Ctrl+Alt+Delete 注册失败，可能已被其他程序占用";
+          settings = next;
+          if (!settings.takeOverWinV) winVActive = false;
+          setTimeout(() => emit("settings-changed", settings));
+          return view();
+        }
+        case "set_autostart":
+          autostart = args.enabled as boolean;
+          return view();
+        case "restart_explorer":
+          winVActive = settings.takeOverWinV;
+          return view();
+        case "storage_stats":
+          return { temp: visible("temp", null).length, perm: visible("perm", null).length, bytes: 18_400_000 };
+        case "app_info":
+          return { version: "0.1.0-dev", dataDir: "C:\\Users\\me\\AppData\\Roaming\\AnyPaste", logDir: "C:\\Users\\me\\AppData\\Roaming\\AnyPaste\\logs" };
         default:
           return null;
       }

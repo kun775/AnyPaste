@@ -129,6 +129,7 @@ mod monitor {
     use crate::{
         events, janitor,
         paths::AppPaths,
+        settings::SettingsState,
         state::AppState,
         store::{now_ms, Store},
     };
@@ -183,13 +184,27 @@ mod monitor {
         }
         // 在读取前取前台进程，尽量贴近触发复制的程序
         let source_app = source::foreground_app();
+        let prefs = app.state::<SettingsState>().get().clone();
+        let armed = state.permanent_armed();
+        // 忽略列表与内容类型只约束自动记录；永久复制是明确操作，不受限制
+        if !armed && source_app.as_deref().is_some_and(|p| prefs.is_ignored(p)) {
+            return Ok(());
+        }
         let Some(captured) = reader::read()? else {
             return Ok(());
+        };
+        let captured = if armed {
+            captured
+        } else {
+            match capture::KindFilter::from(&prefs).apply(captured) {
+                Some(c) => c,
+                None => return Ok(()),
+            }
         };
 
         let store = app.state::<Store>();
         let paths = app.state::<AppPaths>();
-        let settings = store.capture_settings()?;
+        let settings = prefs.capture();
         let Some(mut clip) = capture::prepare(captured, source_app, &paths.images_dir, settings.max_item_bytes)?
         else {
             log::info!("内容超过 {} 字节上限，未记录", settings.max_item_bytes);

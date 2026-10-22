@@ -1,4 +1,5 @@
-/* 设计令牌，与 prototype/index.html 保持一致；深色跟随系统 */
+/* 设计令牌，与 prototype/index.html 保持一致。
+   主题：默认跟随系统；<html data-theme="light|dark"> 可强制指定。 */
 :root {
   --font: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
   --mono: "Cascadia Code", Consolas, monospace;
@@ -17,11 +18,12 @@
   --perm-soft: rgba(230, 160, 20, 0.14);
   --danger: #c42b1c;
   --danger-soft: rgba(196, 43, 28, 0.1);
-  color-scheme: light dark;
+  --ok: #0f7b0f;
+  color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --ink: #f3f3f5;
     --ink-2: #b4b6bd;
     --ink-3: #868992;
@@ -37,7 +39,29 @@
     --perm-soft: rgba(242, 184, 75, 0.14);
     --danger: #ff6b5e;
     --danger-soft: rgba(255, 107, 94, 0.14);
+    --ok: #6ccb5f;
+    color-scheme: dark;
   }
+}
+
+:root[data-theme="dark"] {
+  --ink: #f3f3f5;
+  --ink-2: #b4b6bd;
+  --ink-3: #868992;
+  --surface: #202125;
+  --card: #2b2c31;
+  --card-hover: #34363c;
+  --line: rgba(255, 255, 255, 0.07);
+  --line-strong: rgba(255, 255, 255, 0.14);
+  --accent: #4cc2ff;
+  --accent-ink: #00243a;
+  --accent-soft: rgba(76, 194, 255, 0.14);
+  --perm: #f2b84b;
+  --perm-soft: rgba(242, 184, 75, 0.14);
+  --danger: #ff6b5e;
+  --danger-soft: rgba(255, 107, 94, 0.14);
+  --ok: #6ccb5f;
+  color-scheme: dark;
 }
 
 * {
@@ -64,6 +88,13 @@ input,
 select {
   font: inherit;
   color: inherit;
+}
+
+button:focus-visible,
+select:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 kbd {

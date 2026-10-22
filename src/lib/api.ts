@@ -36,6 +36,44 @@ export interface AppInfo {
   logDir: string;
 }
 
+export type Theme = "system" | "light" | "dark";
+export type PopupPosition = "cursor" | "center";
+
+/** 与后端 settings::Settings 字段一致。 */
+export interface Settings {
+  closeToTray: boolean;
+  paused: boolean;
+  theme: Theme;
+  popupPosition: PopupPosition;
+  plainPasteDefault: boolean;
+  hotkeyOpen: string;
+  hotkeyPermanent: string;
+  takeOverWinV: boolean;
+  notifyPermanent: boolean;
+  terminalApps: string[];
+  ignoredApps: string[];
+  tempTtlSecs: number;
+  tempMaxItems: number;
+  maxItemBytes: number;
+  captureText: boolean;
+  captureRich: boolean;
+  captureImage: boolean;
+  captureFiles: boolean;
+}
+
+export interface SettingsView {
+  settings: Settings;
+  autostart: boolean;
+  winVReleased: boolean;
+  winVActive: boolean;
+}
+
+export interface StorageStats {
+  temp: number;
+  perm: number;
+  bytes: number;
+}
+
 export const hidePopup = () => invoke<void>("hide_popup");
 export const openSettings = () => invoke<void>("open_settings");
 export const isPaused = () => invoke<boolean>("is_paused");
@@ -50,5 +88,15 @@ export const setPermanent = (id: number, permanent: boolean) => invoke<void>("se
 export const deleteClip = (id: number) => invoke<void>("delete_clip", { id });
 export const clearTemp = () => invoke<number>("clear_temp");
 
+export const getSettings = () => invoke<SettingsView>("get_settings");
+export const updateSettings = (settings: Settings) => invoke<SettingsView>("update_settings", { settings });
+export const setAutostart = (enabled: boolean) => invoke<SettingsView>("set_autostart", { enabled });
+export const suspendHotkeys = (suspend: boolean) => invoke<void>("suspend_hotkeys", { suspend });
+export const restartExplorer = () => invoke<SettingsView>("restart_explorer");
+export const openDataDir = () => invoke<void>("open_data_dir");
+export const storageStats = () => invoke<StorageStats>("storage_stats");
+
 export const onClipsChanged = (cb: () => void): Promise<UnlistenFn> => listen("clips-changed", cb);
 export const onPopupShown = (cb: () => void): Promise<UnlistenFn> => listen("popup-shown", cb);
+export const onSettingsChanged = (cb: (s: Settings) => void): Promise<UnlistenFn> =>
+  listen<Settings>("settings-changed", (e) => cb(e.payload));
