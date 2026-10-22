@@ -47,11 +47,15 @@ npm run tauri build -- --bundles nsis
 | `settings.html`、`src/settings/` | 设置窗口（按需创建，关闭即销毁） |
 | `src/lib/` | 前端共享：命令封装 `api.ts`、主题令牌 `theme.css` |
 | `src-tauri/src/` | Rust 核心：托盘、窗口、命令、数据目录、运行时状态 |
+| `src-tauri/src/clipboard/` | 剪贴板监听、格式读取、隐私标记过滤、入库前处理 |
+| `src-tauri/src/store/` | SQLite 存储、迁移脚本、采集设置 |
+| `src-tauri/src/janitor.rs` | 过期与超量临时条目清理、孤立图片清理 |
 
 ## 数据位置
 
 | 内容 | 路径 |
 |---|---|
 | 数据目录 | `%APPDATA%\AnyPaste\` |
+| 数据库 | `%APPDATA%\AnyPaste\anypaste.db`（SQLite，WAL 模式） |
 | 图片 | `%APPDATA%\AnyPaste\images\` |
 | 日志 | `%APPDATA%\AnyPaste\logs\anypaste.log`（单文件上限 1 MB，保留一份历史） |

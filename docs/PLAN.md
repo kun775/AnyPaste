@@ -8,7 +8,7 @@
 | # | 原始需求 | 理解与落地方式 |
 |---|---|---|
 | R1 | 复制快捷键自动保存 | 监听系统剪贴板变化（`AddClipboardFormatListener`），不挂钩 `Ctrl+C` 按键本身。这样右键菜单复制、程序内复制也会被记录，行为与 `Win+V` 一致。 |
-| R2 | 24 小时自动过期 | 普通复制产生**临时条目**，`expires_at = 最近一次复制时间 + TTL`（默认 24h，可配置）。重复复制同一内容会刷新过期时间并置顶。后台每 10 分钟及启动时清理一次。 |
+| R2 | 24 小时自动过期 | 普通复制产生**临时条目**，`expires_at = 最近一次复制时间 + TTL`（默认 24h，可配置）。重复复制同一内容会刷新过期时间并置顶。后台每分钟清理一次，每次新增条目后也会清理。 |
 | R3 | 指定快捷键复制可永久保存 | 全局热键（默认 `Ctrl+Shift+C`，可改）：程序模拟一次复制，捕获到的新内容直接写为**永久条目**；如果 300ms 内剪贴板没有变化（如未选中内容），则把最近一条临时条目转为永久。 |
 | R4 | 指定快捷键弹出列表 | 全局热键（默认 `Alt+V`，可选接管 `Win+V`）在光标附近弹出无边框列表窗口；回车/双击把条目粘贴回原窗口。 |
 | R5 | 取代 `Win+V` | `Win+V` 由系统 Explorer 占用，普通 `RegisterHotKey` 注册不上。设置里提供开关：写入 `HKCU\...\Explorer\Advanced\DisabledHotkeys` 释放 `V`，需重启 Explorer 生效；关闭开关时恢复原值。 |
@@ -81,10 +81,11 @@
 ### 3.1 关键流程
 
 **普通复制（临时）**
-1. 收到 `WM_CLIPBOARDUPDATE` → 如有 AnyPaste 私有标记或隐私标记，跳过。
-2. 按优先级读取格式：文件列表 > 图片 > HTML/RTF + 文本 > 文本。
-3. 计算 `blake3` 哈希 → 已存在则刷新 `last_copied_at`、`expires_at` 并置顶（已是永久的保持永久）；不存在则插入临时条目。
-4. 推送 `clip-added` 事件给前端。
+1. 收到 `WM_CLIPBOARDUPDATE` → 等待 80ms 合并后续通知（OLE 程序一次复制会先写入再 flush，触发两次）→ 剪贴板序列号未变则跳过。
+2. 如有 AnyPaste 私有标记或隐私标记，跳过。
+3. 按优先级读取格式：文件列表 > 文本（附带 HTML/RTF 时为富文本）> 图片（`PNG` 格式优先，其次 `CF_DIB`）。文本优先于图片，因为 Word、Excel 复制文字时也会附带位图。
+4. 计算 `blake3` 哈希（文本类按文字内容，纯文本与富文本视为同一条；图片按像素）→ 已存在则刷新 `last_copied_at`、`expires_at` 并置顶，格式以本次复制为准（已是永久的保持永久）；不存在则插入临时条目。
+5. 推送 `clip-added` 事件给前端（M2）。
 
 **永久复制**
 1. 热键触发 → 记录当前剪贴板序列号 `GetClipboardSequenceNumber`。
@@ -108,7 +109,7 @@ CREATE TABLE clips (
   text           TEXT,                          -- 纯文本 / 文件路径（换行分隔）/ 图片 OCR 预留
   html           TEXT,
   rtf            TEXT,
-  image_path     TEXT,                          -- 相对数据目录
+  image_file     TEXT,                          -- 图片文件名，位于数据目录 images/ 下
   thumb          BLOB,                          -- 小缩略图，列表直接显示
   size_bytes     INTEGER NOT NULL,
   source_app     TEXT,                          -- 进程名，如 chrome.exe
@@ -121,15 +122,18 @@ CREATE TABLE clips (
 );
 CREATE INDEX idx_clips_list ON clips(is_permanent, deleted_at, last_copied_at DESC);
 CREATE INDEX idx_clips_expire ON clips(expires_at) WHERE is_permanent = 0;
-CREATE VIRTUAL TABLE clips_fts USING fts5(text, content='clips', content_rowid='id', tokenize='trigram');
-
 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
+-- M2 迁移：全文搜索
+CREATE VIRTUAL TABLE clips_fts USING fts5(text, content='clips', content_rowid='id', tokenize='trigram');
+-- M5 迁移：同步状态
 CREATE TABLE sync_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);  -- 上次同步时间、远端游标
-CREATE TABLE schema_version (version INTEGER NOT NULL);
 ```
 
+- 迁移脚本位于 `src-tauri/src/store/migrations/`，版本号记录在 `PRAGMA user_version`。
 - 中文搜索用 FTS5 `trigram` 分词，少于 3 个字符时退化为 `LIKE`。
-- 单条内容上限默认 10 MB（可配置），超出只记录元信息并提示。
+- 单条内容上限默认 10 MB（可配置），超出则不记录并写日志。
+- 采集相关设置项：`temp_ttl_secs`（默认 86400）、`temp_max_items`（默认 500，0 为不限）、`max_item_bytes`（默认 10 MB）。
 
 ### 3.3 云同步设计
 
@@ -163,7 +167,7 @@ CREATE TABLE schema_version (version INTEGER NOT NULL);
 | M1 采集与存储 | 剪贴板监听、格式读取、哈希去重、SQLite 与迁移、过期清理、隐私标记过滤 | 2 天 | 复制文本/图片/文件后库中出现对应条目；重复复制只刷新时间；把 TTL 设为 1 分钟可观察到自动清理；KeePass 复制的密码不被记录 |
 | M2 弹窗与粘贴 | 弹出窗口、Tab、搜索、键盘导航、右键菜单、粘贴回原窗口、自身写入不重复记录 | 3 天 | 在记事本、浏览器、VS Code、Word 中 `Alt+V` → 回车可正确粘贴；弹窗出现 < 100ms；列表 1 万条时滚动流畅 |
 | M3 永久复制 | 热键模拟复制、序列号检测、回退为"转永久最近一条"、终端特殊处理 | 1 天 | 选中文本按热键后条目出现在永久 Tab；Windows Terminal 中不会触发 `Ctrl+C` 中断 |
-| M4 设置与系统集成 | 设置窗口、热键录制与冲突提示、开机启动、`Win+V` 接管与恢复、忽略应用、暂停记录、主题 | 2 天 | 所有设置重启后保持；关闭 `Win+V` 接管后系统剪贴板历史恢复 |
+| M4 设置与系统集成 | 设置窗口、热键录制与冲突提示、开机启动、`Win+V` 接管与恢复、忽略应用、暂停记录、主题 | 2 天 | 所有设置重启后保持；修改保留时长后已有临时条目按新时长重算过期时间；关闭 `Win+V` 接管后系统剪贴板历史恢复 |
 | M5 云同步 | OpenDAL 接入 WebDAV/S3、连接测试、增量同步、墓碑、加密、状态展示 | 3 天 | 两台机器指向同一存储，永久条目新增/删除/修改 1 分钟内一致；口令错误时给出明确提示且不覆盖远端 |
 | M6 打磨与发布 | 空态/错误态、动画、性能、NSIS 安装包、便携版、README | 1.5 天 | 安装包 < 8 MB；空闲内存 < 80 MB；冷启动 < 1s |
 

@@ -4,6 +4,7 @@ use std::{fs, io, path::PathBuf};
 #[derive(Debug, Clone)]
 pub struct AppPaths {
     pub data_dir: PathBuf,
+    pub db_file: PathBuf,
     pub images_dir: PathBuf,
     pub log_dir: PathBuf,
 }
@@ -19,8 +20,9 @@ impl AppPaths {
         Ok(paths)
     }
 
-    fn under(data_dir: PathBuf) -> Self {
+    pub(crate) fn under(data_dir: PathBuf) -> Self {
         Self {
+            db_file: data_dir.join("anypaste.db"),
             images_dir: data_dir.join("images"),
             log_dir: data_dir.join("logs"),
             data_dir,
@@ -36,6 +38,7 @@ mod tests {
     fn layout_is_under_data_dir() {
         let p = AppPaths::under(PathBuf::from("root"));
         assert_eq!(p.data_dir, PathBuf::from("root"));
+        assert_eq!(p.db_file, PathBuf::from("root").join("anypaste.db"));
         assert_eq!(p.images_dir, PathBuf::from("root").join("images"));
         assert_eq!(p.log_dir, PathBuf::from("root").join("logs"));
     }

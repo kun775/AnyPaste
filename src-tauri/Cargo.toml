@@ -19,6 +19,22 @@ tauri-plugin-log = "2.10"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 dirs = "6"
+anyhow = "1"
+rusqlite = { version = "0.40", features = ["bundled"] }
+blake3 = "1.8"
+uuid = { version = "1.28", features = ["v4"] }
+image = { version = "0.25", default-features = false, features = ["png", "bmp"] }
+
+[target.'cfg(windows)'.dependencies]
+clipboard-win = { version = "5.4", features = ["monitor", "std"] }
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_System_Threading",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [profile.release]
 codegen-units = 1

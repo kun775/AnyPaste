@@ -1,13 +1,16 @@
+mod clipboard;
 mod commands;
+mod janitor;
 mod paths;
 mod state;
+mod store;
 mod tray;
 mod windows;
 
-use tauri::RunEvent;
+use tauri::{Manager, RunEvent};
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind, TimezoneStrategy};
 
-use crate::{paths::AppPaths, state::AppState};
+use crate::{paths::AppPaths, state::AppState, store::Store};
 
 pub fn run() {
     let paths = AppPaths::init().expect("无法创建数据目录");
@@ -40,9 +43,22 @@ pub fn run() {
             commands::app_info,
         ])
         .setup(|app| {
+            log::info!("AnyPaste {} 正在启动", app.package_info().version);
+            let paths = app.state::<AppPaths>();
+            let store = Store::open(&paths.db_file)?;
+            // 先于剪贴板监听执行，避免误删监听线程刚写入的图片
+            match janitor::sweep_orphan_images(&store, &paths) {
+                Ok(0) => {}
+                Ok(n) => log::info!("清理孤立图片 {n} 个"),
+                Err(e) => log::warn!("清理孤立图片失败: {e:#}"),
+            }
+            app.manage(store);
+
             tray::create(app.handle())?;
             windows::setup_popup(app.handle())?;
-            log::info!("AnyPaste {} 已启动", app.package_info().version);
+            janitor::spawn(app.handle().clone());
+            #[cfg(windows)]
+            clipboard::spawn(app.handle().clone());
             Ok(())
         })
         .build(tauri::generate_context!())
