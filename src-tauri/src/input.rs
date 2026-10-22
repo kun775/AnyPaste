@@ -11,7 +11,8 @@ use windows::Win32::{
     UI::{
         Input::KeyboardAndMouse::{
             GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
-            KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT, VK_V,
+            KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, VIRTUAL_KEY, VK_C, VK_CONTROL, VK_INSERT, VK_LWIN, VK_MENU,
+            VK_RWIN, VK_SHIFT, VK_V,
         },
         WindowsAndMessaging::{
             GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindow, SetForegroundWindow, ShowWindow,
@@ -59,6 +60,15 @@ pub fn paste_into(target: isize) -> anyhow::Result<()> {
     ])
 }
 
+/// 向前台窗口模拟一次复制。`insert` 为 true 时发送 Ctrl+Insert：终端里没有选中内容时
+/// Ctrl+C 会中断正在运行的命令，而 Ctrl+Insert 在终端、编辑器和浏览器中都只表示复制。
+pub fn send_copy(insert: bool) -> anyhow::Result<()> {
+    // 热键本身的 Shift 若仍按着，Ctrl+C 会变成 Ctrl+Shift+C 并再次触发热键
+    release_modifiers();
+    let vk = if insert { VK_INSERT } else { VK_C };
+    send(&[key(VK_CONTROL, false), key(vk, false), key(vk, true), key(VK_CONTROL, true)])
+}
+
 /// 等待用户松开修饰键（如 Shift+Enter 中的 Shift），超时后补发抬起事件，避免 Ctrl+V 变成其他组合键。
 fn release_modifiers() {
     let held = || MODIFIERS.iter().any(|vk| unsafe { GetAsyncKeyState(vk.0 as i32) } < 0);
@@ -75,7 +85,8 @@ fn release_modifiers() {
     }
 }
 
-fn wait_until(timeout: Duration, mut done: impl FnMut() -> bool) -> bool {
+/// 每 10ms 检查一次条件，满足时返回 true，超时返回 false。
+pub fn wait_until(timeout: Duration, mut done: impl FnMut() -> bool) -> bool {
     let start = Instant::now();
     loop {
         if done() {
@@ -89,13 +100,18 @@ fn wait_until(timeout: Duration, mut done: impl FnMut() -> bool) -> bool {
 }
 
 fn key(vk: VIRTUAL_KEY, up: bool) -> INPUT {
+    let mut flags = if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) };
+    // Insert 是扩展键，缺少标志时可能被识别为小键盘的 0/Ins
+    if vk == VK_INSERT {
+        flags |= KEYEVENTF_EXTENDEDKEY;
+    }
     INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
                 wVk: vk,
                 wScan: 0,
-                dwFlags: if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) },
+                dwFlags: flags,
                 time: 0,
                 dwExtraInfo: 0,
             },

@@ -6,6 +6,8 @@ mod hotkey;
 mod input;
 mod janitor;
 mod paths;
+#[cfg(windows)]
+mod permanent;
 mod state;
 mod store;
 mod tray;
@@ -39,6 +41,7 @@ pub fn run() {
                 .build(),
         )
         .plugin(hotkey::plugin())
+        .plugin(tauri_plugin_notification::init())
         .manage(AppState::default())
         .manage(paths)
         .invoke_handler(tauri::generate_handler![
@@ -71,7 +74,7 @@ pub fn run() {
             janitor::spawn(app.handle().clone());
             #[cfg(windows)]
             clipboard::spawn(app.handle().clone());
-            hotkey::register(app.handle());
+            hotkey::register_defaults(app.handle());
             Ok(())
         })
         .build(tauri::generate_context!())

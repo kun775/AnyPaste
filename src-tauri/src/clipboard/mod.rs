@@ -11,7 +11,15 @@ mod writer;
 #[cfg(windows)]
 pub use monitor::spawn;
 #[cfg(windows)]
+pub use source::foreground_app;
+#[cfg(windows)]
 pub use writer::write;
+
+/// 系统剪贴板序列号，内容每变化一次加一。
+#[cfg(windows)]
+pub fn sequence() -> Option<std::num::NonZeroU32> {
+    clipboard_win::raw::seq_num()
+}
 
 /// 读写真实的系统剪贴板，会临时覆盖当前内容，默认忽略：
 /// `cargo test -- --ignored --test-threads=1 clipboard::system_tests`
@@ -168,7 +176,9 @@ mod monitor {
     }
 
     fn on_update(app: &AppHandle) -> anyhow::Result<()> {
-        if app.state::<AppState>().is_paused() {
+        let state = app.state::<AppState>();
+        // 永久复制是用户的明确操作，暂停记录时也照常保存
+        if state.is_paused() && !state.permanent_armed() {
             return Ok(());
         }
         // 在读取前取前台进程，尽量贴近触发复制的程序
@@ -180,17 +190,21 @@ mod monitor {
         let store = app.state::<Store>();
         let paths = app.state::<AppPaths>();
         let settings = store.capture_settings()?;
-        let Some(clip) = capture::prepare(captured, source_app, &paths.images_dir, settings.max_item_bytes)? else {
+        let Some(mut clip) = capture::prepare(captured, source_app, &paths.images_dir, settings.max_item_bytes)?
+        else {
             log::info!("内容超过 {} 字节上限，未记录", settings.max_item_bytes);
             return Ok(());
         };
+        // 只有真正得到内容时才消费永久标记，永久复制线程据此判断是否成功
+        clip.permanent = state.take_permanent_armed();
 
         let now = now_ms();
         let result = store.upsert_clip(&clip, now, settings.ttl_ms)?;
         // 不记录内容本身，只记录类型与大小
         log::info!(
-            "{} {} 条目 #{}（{} 字节，来自 {}）",
+            "{} {}{} 条目 #{}（{} 字节，来自 {}）",
             if result.inserted { "新增" } else { "置顶" },
+            if clip.permanent { "永久 " } else { "" },
             clip.kind.as_str(),
             result.id,
             clip.size_bytes,

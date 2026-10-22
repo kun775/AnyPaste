@@ -55,6 +55,8 @@ pub struct NewClip {
     pub thumb: Option<Vec<u8>>,
     pub size_bytes: i64,
     pub source_app: Option<String>,
+    /// 通过永久复制热键采集时为 true。
+    pub permanent: bool,
 }
 
 /// 批量删除的结果。
@@ -73,15 +75,16 @@ pub struct Upserted {
 }
 
 impl Store {
-    /// 新内容插入为临时条目；已存在的内容刷新复制时间与过期时间，并以本次复制的格式为准。
-    /// 永久条目保持永久；已删除（墓碑）的条目按新的临时条目复活。
+    /// 新内容插入为临时条目（`clip.permanent` 时为永久）；已存在的内容刷新复制时间与过期时间，
+    /// 并以本次复制的格式为准。永久条目保持永久；已删除（墓碑）的条目按新条目复活。
     pub fn upsert_clip(&self, clip: &NewClip, now: i64, ttl_ms: i64) -> rusqlite::Result<Upserted> {
         let uuid = uuid::Uuid::new_v4().to_string();
+        let expires = (!clip.permanent).then(|| now.saturating_add(ttl_ms));
         let (id, returned_uuid): (i64, String) = self.conn().query_row(
             "INSERT INTO clips (uuid, kind, content_hash, text, html, rtf, image_file, thumb,
                                 size_bytes, source_app, is_permanent, created_at, last_copied_at,
                                 expires_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, ?11, ?11, ?12, ?11)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?13, ?11, ?11, ?12, ?11)
              ON CONFLICT (content_hash) DO UPDATE SET
                kind = excluded.kind,
                html = excluded.html,
@@ -90,8 +93,10 @@ impl Store {
                thumb = excluded.thumb,
                size_bytes = excluded.size_bytes,
                source_app = excluded.source_app,
-               is_permanent = CASE WHEN clips.deleted_at IS NULL THEN clips.is_permanent ELSE 0 END,
-               expires_at = CASE WHEN clips.deleted_at IS NULL AND clips.is_permanent = 1
+               is_permanent = CASE WHEN excluded.is_permanent = 1 THEN 1
+                                   WHEN clips.deleted_at IS NULL THEN clips.is_permanent ELSE 0 END,
+               expires_at = CASE WHEN excluded.is_permanent = 1
+                                   OR (clips.deleted_at IS NULL AND clips.is_permanent = 1)
                                  THEN NULL ELSE excluded.expires_at END,
                last_copied_at = excluded.last_copied_at,
                updated_at = excluded.updated_at,
@@ -109,7 +114,8 @@ impl Store {
                 clip.size_bytes,
                 clip.source_app,
                 now,
-                now.saturating_add(ttl_ms),
+                expires,
+                clip.permanent,
             ],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
@@ -186,6 +192,21 @@ impl Store {
         Ok(n > 0)
     }
 
+    /// 最近复制且未过期的临时条目。
+    pub fn latest_temp(&self, now: i64) -> rusqlite::Result<Option<i64>> {
+        let row = self.conn().query_row(
+            "SELECT id FROM clips WHERE is_permanent = 0 AND deleted_at IS NULL AND expires_at > ?1
+             ORDER BY last_copied_at DESC, id DESC LIMIT 1",
+            [now],
+            |r| r.get(0),
+        );
+        match row {
+            Ok(id) => Ok(Some(id)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     pub fn delete_clip(&self, id: i64) -> rusqlite::Result<Deleted> {
         let conn = self.conn();
         let mut stmt = conn.prepare("DELETE FROM clips WHERE id = ?1 RETURNING image_file")?;
@@ -235,6 +256,7 @@ pub(crate) mod tests {
             thumb: None,
             size_bytes: text.len() as i64,
             source_app: Some("notepad.exe".into()),
+            permanent: false,
         }
     }
 
@@ -283,6 +305,33 @@ pub(crate) mod tests {
         store.upsert_clip(&text_clip("a"), 500, TTL).unwrap();
         let (_, perm, copied, expires, _) = row(&store, id);
         assert_eq!((perm, copied, expires), (1, 500, None));
+    }
+
+    #[test]
+    fn permanent_capture_inserts_or_promotes() {
+        let store = Store::open_in_memory().unwrap();
+        let mut c = text_clip("new");
+        c.permanent = true;
+        let id = store.upsert_clip(&c, 100, TTL).unwrap().id;
+        assert_eq!(row(&store, id), ("text".into(), 1, 100, None, None));
+
+        // 已有的临时条目被永久复制后转为永久
+        let temp = store.upsert_clip(&text_clip("old"), 0, TTL).unwrap().id;
+        let mut again = text_clip("old");
+        again.permanent = true;
+        store.upsert_clip(&again, 200, TTL).unwrap();
+        assert_eq!(row(&store, temp), ("text".into(), 1, 200, None, None));
+    }
+
+    #[test]
+    fn latest_temp_skips_permanent_and_expired() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.latest_temp(0).unwrap(), None);
+        let old = store.upsert_clip(&text_clip("old"), 0, TTL).unwrap().id;
+        let perm = store.upsert_clip(&text_clip("perm"), 50, TTL).unwrap().id;
+        store.set_permanent(perm, true, 50, TTL).unwrap();
+        assert_eq!(store.latest_temp(500).unwrap(), Some(old));
+        assert_eq!(store.latest_temp(1000).unwrap(), None);
     }
 
     #[test]

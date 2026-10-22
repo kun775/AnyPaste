@@ -46,6 +46,7 @@ pub fn prepare(
                 image_file: None,
                 thumb: None,
                 source_app,
+                permanent: false,
             }
         }
         Captured::Text { text, html, rtf } => {
@@ -64,6 +65,7 @@ pub fn prepare(
                 image_file: None,
                 thumb: None,
                 source_app,
+                permanent: false,
             }
         }
         Captured::Image { bytes, format } => {
@@ -89,6 +91,7 @@ pub fn prepare(
                 html: None,
                 rtf: None,
                 source_app,
+                permanent: false,
             }
         }
     };

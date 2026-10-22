@@ -17,6 +17,7 @@ tauri = { version = "2.12", features = ["tray-icon"] }
 tauri-plugin-single-instance = "2.5"
 tauri-plugin-log = "2.10"
 tauri-plugin-global-shortcut = "2.3"
+tauri-plugin-notification = "2.3"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 dirs = "6"
