@@ -1,0 +1,76 @@
+/* 设计令牌，与 prototype/index.html 保持一致；深色跟随系统 */
+:root {
+  --font: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  --mono: "Cascadia Code", Consolas, monospace;
+  --ink: #1b1b1f;
+  --ink-2: #5c5f66;
+  --ink-3: #8a8d94;
+  --surface: #f9f9fb;
+  --card: #ffffff;
+  --card-hover: #f4f5f7;
+  --line: rgba(0, 0, 0, 0.08);
+  --line-strong: rgba(0, 0, 0, 0.14);
+  --accent: #0067c0;
+  --accent-ink: #ffffff;
+  --accent-soft: rgba(0, 103, 192, 0.1);
+  --perm: #c27c00;
+  --perm-soft: rgba(230, 160, 20, 0.14);
+  --danger: #c42b1c;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #f3f3f5;
+    --ink-2: #b4b6bd;
+    --ink-3: #868992;
+    --surface: #202125;
+    --card: #2b2c31;
+    --card-hover: #34363c;
+    --line: rgba(255, 255, 255, 0.07);
+    --line-strong: rgba(255, 255, 255, 0.14);
+    --accent: #4cc2ff;
+    --accent-ink: #00243a;
+    --accent-soft: rgba(76, 194, 255, 0.14);
+    --perm: #f2b84b;
+    --perm-soft: rgba(242, 184, 75, 0.14);
+    --danger: #ff6b5e;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  font-family: var(--font);
+  font-size: 14px;
+  color: var(--ink);
+  background: var(--surface);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+kbd {
+  font-family: var(--font);
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  background: var(--card);
+  color: var(--ink-2);
+}
