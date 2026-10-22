@@ -78,7 +78,9 @@ cargo test --manifest-path src-tauri/Cargo.toml -- --ignored webdav
 npm run tauri build -- --bundles nsis
 ```
 
-安装包输出到 `src-tauri/target/release/bundle/nsis/`。
+安装包输出到 `src-tauri/target/release/bundle/nsis/`（按当前用户安装，无需管理员权限）。
+
+**便携版**：把 `src-tauri/target/release/anypaste.exe` 放进任意目录，并在同一目录新建一个名为 `portable` 的空文件，数据就会保存在该目录的 `data` 子目录中。CI 会同时产出 `AnyPaste-portable-x64.zip`。
 
 ## 目录
 
@@ -104,3 +106,6 @@ npm run tauri build -- --bundles nsis
 | 数据库 | `%APPDATA%\AnyPaste\anypaste.db`（SQLite，WAL 模式） |
 | 图片 | `%APPDATA%\AnyPaste\images\` |
 | 日志 | `%APPDATA%\AnyPaste\logs\anypaste.log`（单文件上限 1 MB，保留一份历史） |
+| 凭据 | Windows 凭据管理器中名为 `AnyPaste` 的条目（云同步密码与口令） |
+
+便携模式下以上目录都位于程序目录的 `data` 子目录中。

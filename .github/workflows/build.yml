@@ -37,7 +37,18 @@ jobs:
 
       - run: npm run tauri build -- --bundles nsis
 
+      # 便携版：程序旁的 portable 文件让数据保存在程序目录的 data 子目录中
+      - name: Package portable zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force portable | Out-Null
+          Copy-Item src-tauri/target/release/anypaste.exe portable/AnyPaste.exe
+          New-Item -ItemType File portable/portable | Out-Null
+          Compress-Archive -Path portable/* -DestinationPath AnyPaste-portable-x64.zip
+
       - uses: actions/upload-artifact@v4
         with:
           name: anypaste-windows
-          path: src-tauri/target/release/bundle/nsis/*.exe
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            AnyPaste-portable-x64.zip
