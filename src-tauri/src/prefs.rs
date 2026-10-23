@@ -55,6 +55,9 @@ pub fn update(app: &AppHandle, next: Settings) -> anyhow::Result<Settings> {
         janitor::cleanup(&store, &app.state::<AppPaths>(), &next.capture(), now_ms())?;
         clips_changed = true;
     }
+    if prev.popup_release_secs != next.popup_release_secs {
+        crate::windows::on_release_setting_changed(app, next.popup_release_secs);
+    }
     if prev.paused != next.paused {
         log::info!("记录状态: {}", if next.paused { "已暂停" } else { "记录中" });
     }

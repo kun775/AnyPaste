@@ -15,6 +15,7 @@ const MAX_TEMP_ITEMS: usize = 100_000;
 const MIN_ITEM_BYTES: usize = 64 * 1024;
 const MAX_ITEM_BYTES: usize = 100 * 1024 * 1024;
 const MAX_LIST_LEN: usize = 100;
+const MIN_RELEASE_SECS: u64 = 30;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -43,6 +44,8 @@ pub struct Settings {
     pub popup_position: PopupPosition,
     /// 回车默认以纯文本粘贴（Shift+Enter 反之）。
     pub plain_paste_default: bool,
+    /// 弹出列表隐藏多少秒后释放（销毁 WebView 以回收内存）；0 表示常驻，打开最快但占用内存较多。
+    pub popup_release_secs: u64,
     /// 热键，使用 global-shortcut 的写法，如 `alt+v`。
     pub hotkey_open: String,
     pub hotkey_permanent: String,
@@ -71,6 +74,7 @@ impl Default for Settings {
             theme: Theme::System,
             popup_position: PopupPosition::Cursor,
             plain_paste_default: false,
+            popup_release_secs: 60,
             hotkey_open: "alt+v".into(),
             hotkey_permanent: "ctrl+shift+c".into(),
             take_over_win_v: false,
@@ -137,6 +141,9 @@ impl Settings {
     pub fn validated(mut self) -> Result<Self, String> {
         if !(MIN_TTL_SECS..=MAX_TTL_SECS).contains(&self.temp_ttl_secs) {
             return Err("保留时长需在 1 分钟到 30 天之间".into());
+        }
+        if self.popup_release_secs != 0 && !(MIN_RELEASE_SECS..=MAX_TTL_SECS).contains(&self.popup_release_secs) {
+            return Err("弹出列表释放时间需不少于 30 秒".into());
         }
         if self.temp_max_items > MAX_TEMP_ITEMS {
             return Err(format!("临时条目上限不能超过 {MAX_TEMP_ITEMS}"));
@@ -259,6 +266,8 @@ mod tests {
             s.validated().is_err()
         };
         assert!(bad(|s| s.temp_ttl_secs = 10));
+        assert!(bad(|s| s.popup_release_secs = 5));
+        assert!(!bad(|s| s.popup_release_secs = 0));
         assert!(bad(|s| s.max_item_bytes = 1));
         assert!(bad(|s| s.hotkey_open = "v".into()));
         assert!(bad(|s| s.hotkey_open = "ctrl+nonsense".into()));

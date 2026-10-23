@@ -24,13 +24,21 @@ use tauri_plugin_log::{RotationStrategy, Target, TargetKind, TimezoneStrategy};
 
 use crate::{hotkey::Hotkeys, paths::AppPaths, settings::SettingsState, state::AppState, store::Store};
 
+/// 启动参数：打开剪贴板历史（可用于自定义快捷方式或其他启动器）。
+const POPUP_ARG: &str = "--popup";
+
 pub fn run() {
     let paths = AppPaths::init().expect("无法创建数据目录");
 
     let app = tauri::Builder::default()
-        // 必须最先注册：重复启动时由已运行的实例打开设置窗口，新进程直接退出
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            windows::show_settings(app);
+        // 必须最先注册：重复启动时由已运行的实例处理（带 --popup 打开剪贴板历史，否则打开设置），新进程直接退出
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if args.iter().any(|a| a == POPUP_ARG) {
+                #[cfg(windows)]
+                windows::show_popup(app, input::foreground_window());
+            } else {
+                windows::show_settings(app);
+            }
         }))
         .plugin(
             tauri_plugin_log::Builder::new()
@@ -93,7 +101,6 @@ pub fn run() {
 
             let sync_on = sync::load_config(&app.state::<Store>()).enabled;
             tray::create(app.handle(), &settings, prefs::autostart_enabled(app.handle()), sync_on)?;
-            windows::setup_popup(app.handle())?;
             janitor::spawn(app.handle().clone());
             sync::spawn(app.handle().clone());
             #[cfg(windows)]
@@ -101,6 +108,11 @@ pub fn run() {
             // 热键冲突不影响启动，仍可从托盘使用，并可在设置中更换
             if let Err(e) = hotkey::apply(app.handle(), &settings) {
                 log::warn!("{e:#}");
+            }
+            if std::env::args().any(|a| a == POPUP_ARG) {
+                windows::show_popup(app.handle(), None);
+            } else if settings.popup_release_secs == 0 {
+                windows::preload_popup(app.handle());
             }
             Ok(())
         })

@@ -1,5 +1,14 @@
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
+
 use tauri::{
-    AppHandle, Manager, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
+    webview::PageLoadEvent, AppHandle, Manager, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    WindowEvent,
 };
 
 use crate::{
@@ -13,21 +22,8 @@ pub const SETTINGS: &str = "settings";
 
 /// 弹窗与光标之间的间距（逻辑像素）。
 const CURSOR_GAP: f64 = 4.0;
-
-/// 弹出窗口在配置中预先创建且常驻隐藏，保证热键唤出时足够快。
-pub fn setup_popup(app: &AppHandle) -> tauri::Result<()> {
-    let popup = app
-        .get_webview_window(POPUP)
-        .ok_or_else(|| tauri::Error::WindowNotFound)?;
-    let handle = popup.clone();
-    popup.on_window_event(move |event| {
-        // 失去焦点即隐藏，与系统 Win+V 的行为一致
-        if let WindowEvent::Focused(false) = event {
-            let _ = handle.hide();
-        }
-    });
-    Ok(())
-}
+/// 弹窗的逻辑尺寸。
+const POPUP_SIZE: (f64, f64) = (380.0, 520.0);
 
 /// 热键触发：弹窗可见时隐藏，否则记录当前前台窗口后弹出。
 #[cfg(windows)]
@@ -44,30 +40,120 @@ pub fn toggle_popup(app: &AppHandle) {
 }
 
 /// 在光标附近显示弹窗。`target` 为粘贴目标窗口，为空时选中条目只复制不粘贴。
+/// 弹窗不存在（首次打开或空闲后已销毁）时先创建，页面加载完成后再显示。
 pub fn show_popup(app: &AppHandle, target: Option<isize>) {
-    let Some(popup) = app.get_webview_window(POPUP) else {
-        return;
-    };
-    app.state::<AppState>().set_paste_target(target);
+    let state = app.state::<AppState>();
+    state.set_paste_target(target);
+    // 取消尚未执行的空闲销毁
+    state.bump_popup_generation();
+    match app.get_webview_window(POPUP) {
+        Some(popup) => {
+            events::popup_shown(app);
+            present(app, &popup);
+        }
+        None => create_popup(app, true),
+    }
+}
+
+/// 设置为常驻时在后台预先创建弹窗（隐藏），首次打开也无需等待 WebView 启动。
+pub fn preload_popup(app: &AppHandle) {
+    if app.get_webview_window(POPUP).is_none() {
+        create_popup(app, false);
+    }
+}
+
+/// “空闲后释放”设置变化：改为常驻时预先创建；改为释放时，若弹窗正隐藏则按新时长计时。
+pub fn on_release_setting_changed(app: &AppHandle, release_secs: u64) {
+    if release_secs == 0 {
+        preload_popup(app);
+    } else if app
+        .get_webview_window(POPUP)
+        .is_some_and(|p| !p.is_visible().unwrap_or(true))
+    {
+        schedule_release(app);
+    }
+}
+
+fn present(app: &AppHandle, popup: &WebviewWindow) {
     let position = app.state::<SettingsState>().get().popup_position;
     let placed = match position {
-        PopupPosition::Cursor => place_near_cursor(app, &popup),
+        PopupPosition::Cursor => place_near_cursor(app, popup),
         PopupPosition::Center => popup.center(),
     };
     if let Err(e) = placed {
         log::warn!("定位弹出列表失败: {e}");
         let _ = popup.center();
     }
-    events::popup_shown(app);
     if let Err(e) = popup.show().and_then(|_| popup.set_focus()) {
         log::warn!("显示弹出列表失败: {e}");
     }
 }
 
-pub fn hide_popup(app: &AppHandle) {
-    if let Some(popup) = app.get_webview_window(POPUP) {
-        let _ = popup.hide();
+/// 创建弹窗；`show` 为 true 时在页面首次加载完成后显示，避免先出现空白窗口。
+fn create_popup(app: &AppHandle, show: bool) {
+    let handle = app.clone();
+    // 只处理首次加载完成；开发模式热更新会再次触发加载事件
+    let shown = Arc::new(AtomicBool::new(!show));
+    let built = WebviewWindowBuilder::new(app, POPUP, WebviewUrl::App("popup.html".into()))
+        .title("AnyPaste")
+        .inner_size(POPUP_SIZE.0, POPUP_SIZE.1)
+        .resizable(false)
+        .decorations(false)
+        .visible(false)
+        .skip_taskbar(true)
+        .always_on_top(true)
+        .shadow(true)
+        .on_page_load(move |popup, payload| {
+            if payload.event() == PageLoadEvent::Finished && !shown.swap(true, Ordering::Relaxed) {
+                present(&handle, &popup);
+            }
+        })
+        .build();
+    match built {
+        Ok(popup) => {
+            let handle = app.clone();
+            popup.on_window_event(move |event| {
+                // 失去焦点即隐藏，与系统 Win+V 的行为一致
+                if let WindowEvent::Focused(false) = event {
+                    hide_popup(&handle);
+                }
+            });
+        }
+        Err(e) => log::error!("创建弹出列表失败: {e}"),
     }
+}
+
+pub fn hide_popup(app: &AppHandle) {
+    let Some(popup) = app.get_webview_window(POPUP) else {
+        return;
+    };
+    let _ = popup.hide();
+    schedule_release(app);
+}
+
+/// 隐藏后若一直没有再次打开，到期销毁弹窗，WebView2 进程随之退出并释放内存。
+/// 设置为常驻（0）时不释放。
+fn schedule_release(app: &AppHandle) {
+    let secs = app.state::<SettingsState>().get().popup_release_secs;
+    if secs == 0 {
+        return;
+    }
+    let generation = app.state::<AppState>().popup_generation();
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(secs)).await;
+        if app.state::<AppState>().popup_generation() != generation {
+            return;
+        }
+        if let Some(popup) = app.get_webview_window(POPUP) {
+            if !popup.is_visible().unwrap_or(true) {
+                match popup.destroy() {
+                    Ok(()) => log::info!("弹出列表空闲，已释放"),
+                    Err(e) => log::warn!("释放弹出列表失败: {e}"),
+                }
+            }
+        }
+    });
 }
 
 /// 优先放在光标右下方，放不下时翻到另一侧，最后限制在光标所在显示器的工作区内。
@@ -77,9 +163,8 @@ fn place_near_cursor(app: &AppHandle, popup: &WebviewWindow) -> tauri::Result<()
         return popup.center();
     };
     // 目标显示器的缩放比例可能与当前不同，按逻辑尺寸换算
-    let size = popup.outer_size()?.to_logical::<f64>(popup.scale_factor()?);
     let scale = monitor.scale_factor();
-    let (w, h) = ((size.width * scale).round() as i32, (size.height * scale).round() as i32);
+    let (w, h) = ((POPUP_SIZE.0 * scale).round() as i32, (POPUP_SIZE.1 * scale).round() as i32);
     let gap = (CURSOR_GAP * scale).round() as i32;
     let area = monitor.work_area();
     let (left, top) = (area.position.x, area.position.y);

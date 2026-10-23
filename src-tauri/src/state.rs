@@ -1,6 +1,6 @@
 use std::{
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex, MutexGuard,
     },
     time::{Duration, Instant},
@@ -17,6 +17,8 @@ pub struct AppState {
     permanent_until: Mutex<Option<Instant>>,
     /// 永久复制流程正在执行，忽略重复按下的热键。
     permanent_busy: AtomicBool,
+    /// 每次打开弹窗加一；空闲销毁任务据此判断期间是否又打开过。
+    popup_generation: AtomicU64,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -66,6 +68,14 @@ impl AppState {
 
     pub fn end_permanent_copy(&self) {
         self.permanent_busy.store(false, Ordering::Release);
+    }
+
+    pub fn bump_popup_generation(&self) {
+        self.popup_generation.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub fn popup_generation(&self) -> u64 {
+        self.popup_generation.load(Ordering::Acquire)
     }
 }
 

@@ -10,6 +10,7 @@ const DEFAULT_SETTINGS: Settings = {
   theme: "system",
   popupPosition: "cursor",
   plainPasteDefault: false,
+  popupReleaseSecs: 60,
   hotkeyOpen: "alt+v",
   hotkeyPermanent: "ctrl+shift+c",
   takeOverWinV: false,

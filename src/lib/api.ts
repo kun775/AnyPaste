@@ -46,6 +46,8 @@ export interface Settings {
   theme: Theme;
   popupPosition: PopupPosition;
   plainPasteDefault: boolean;
+  /** 弹出列表隐藏多少秒后释放内存；0 表示常驻。 */
+  popupReleaseSecs: number;
   hotkeyOpen: string;
   hotkeyPermanent: string;
   takeOverWinV: boolean;

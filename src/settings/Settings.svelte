@@ -38,6 +38,7 @@
   const MAX_ITEMS_OPTIONS = [200, 500, 1000, 5000, 0];
   const MB = 1024 * 1024;
   const MAX_BYTES_OPTIONS = [MB, 5 * MB, 10 * MB, 50 * MB, 100 * MB];
+  const RELEASE_OPTIONS = [60, 300, 1800, 0];
 
   let pane = $state<Pane>("general");
   let view = $state<SettingsView | null>(null);
@@ -183,6 +184,17 @@
         <select value={s.popupPosition} onchange={(e) => save({ popupPosition: e.currentTarget.value as Settings["popupPosition"] })}>
           <option value="cursor">跟随鼠标光标</option>
           <option value="center">屏幕中央</option>
+        </select>
+      </div>
+      <div class="row">
+        <div class="rt">
+          <b>空闲后释放弹出列表</b>
+          <small>释放后不占用内存，下次打开需约 1 秒加载；常驻则始终秒开，但会多占用约 150 MB 内存</small>
+        </div>
+        <select value={s.popupReleaseSecs} onchange={(e) => save({ popupReleaseSecs: Number(e.currentTarget.value) })}>
+          {#each withCurrent(RELEASE_OPTIONS, s.popupReleaseSecs) as v (v)}
+            <option value={v}>{v === 0 ? "从不释放（常驻）" : `隐藏 ${ttlLabel(v)}后`}</option>
+          {/each}
         </select>
       </div>
       <div class="row">
