@@ -24,6 +24,19 @@ pub const SETTINGS: &str = "settings";
 const CURSOR_GAP: f64 = 4.0;
 /// 弹窗的逻辑尺寸。
 const POPUP_SIZE: (f64, f64) = (380.0, 520.0);
+/// 失焦或移动后等待窗口状态稳定的时间。
+const FOCUS_SETTLE: Duration = Duration::from_millis(150);
+
+/// 弹窗是否仍是前台窗口（拖动过程中保持为前台）。
+fn popup_is_foreground(app: &AppHandle) -> bool {
+    #[cfg(windows)]
+    if let Some(Ok(hwnd)) = app.get_webview_window(POPUP).map(|p| p.hwnd()) {
+        return crate::input::foreground_hwnd() == hwnd.0 as isize;
+    }
+    #[cfg(not(windows))]
+    let _ = app;
+    false
+}
 
 /// 热键触发：弹窗可见时隐藏，否则记录当前前台窗口后弹出。
 #[cfg(windows)]
@@ -112,11 +125,32 @@ fn create_popup(app: &AppHandle, show: bool) {
     match built {
         Ok(popup) => {
             let handle = app.clone();
-            popup.on_window_event(move |event| {
-                // 失去焦点即隐藏，与系统 Win+V 的行为一致
-                if let WindowEvent::Focused(false) = event {
-                    hide_popup(&handle);
+            popup.on_window_event(move |event| match event {
+                // 失去焦点即隐藏，与系统 Win+V 的行为一致。但开始拖动窗口时也会短暂失焦，
+                // 所以稍后确认前台确实换成了其他窗口才隐藏
+                WindowEvent::Focused(false) => {
+                    let handle = handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(FOCUS_SETTLE).await;
+                        if !popup_is_foreground(&handle) {
+                            hide_popup(&handle);
+                        }
+                    });
                 }
+                // 拖动结束后把焦点还给弹窗，之后点击其他窗口时才能再次触发失焦隐藏
+                WindowEvent::Moved(_) => {
+                    let generation = handle.state::<AppState>().bump_move_generation();
+                    let handle = handle.clone();
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(FOCUS_SETTLE).await;
+                        if handle.state::<AppState>().move_generation() == generation && popup_is_foreground(&handle) {
+                            if let Some(p) = handle.get_webview_window(POPUP) {
+                                let _ = p.set_focus();
+                            }
+                        }
+                    });
+                }
+                _ => {}
             });
         }
         Err(e) => log::error!("创建弹出列表失败: {e}"),

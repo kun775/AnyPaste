@@ -65,6 +65,9 @@ function fixtures(): ClipItem[] {
     make("rich", "季度总结：用户增长 23%，留存率提升至 41%。", "WINWORD.EXE", 48 * MIN),
     make("image", "1280×720", "SnippingTool.exe", 3 * HOUR, { thumb: THUMB, sizeBytes: 245_000 }),
     make("files", "C:\\Users\\me\\design-v2.fig\nC:\\Users\\me\\logo.svg", "explorer.exe", 9 * HOUR),
+    make("files", "C:\\Users\\me\\WeChat Files\\temp\\b810118b64edc447ef17d8e02.jpg", "Weixin.exe", 5 * MIN, {
+      thumb: THUMB,
+    }),
     make("text", "顺丰 SF1402938475612", "msedge.exe", 23 * HOUR + 20 * MIN),
     make("text", "huang@example.com", "Outlook.exe", 5 * 24 * HOUR, { permanent: true, expiresAt: null }),
     make("text", "git log --oneline --graph --decorate -20", "WindowsTerminal.exe", 2 * 24 * HOUR, {

@@ -64,6 +64,7 @@
     {#if item.kind === "image" && item.thumb}
       <img class="thumb" src={item.thumb} alt="图片 {item.preview}" />
     {:else if item.kind === "files"}
+      {#if item.thumb}<img class="thumb" src={item.thumb} alt="图片文件 {files[0]}" />{/if}
       <div class="preview">{files.length} 个文件：{files.join("、")}</div>
     {:else}
       <div class="preview" class:link>{item.preview}</div>
@@ -86,7 +87,7 @@
   </div>
   {#if index < 9}<span class="num">{index + 1}</span>{/if}
   <div class="actions">
-    {#if item.kind === "image"}
+    {#if item.thumb}
       <button class="act" title="预览原图" onclick={stop(onpreview)}>{@html icons.eye}</button>
     {/if}
     <button class="act pin" class:on={item.pinned} title={item.pinned ? "取消置顶" : "置顶"} onclick={stop(onpin)}>

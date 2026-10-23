@@ -216,7 +216,7 @@
     const entries: MenuEntry[] = [
       { label: "粘贴", icon: icons.paste, shortcut: "Enter", run: () => paste(item) },
     ];
-    if (item.kind === "image") {
+    if (item.thumb) {
       entries.push({ label: "预览原图", icon: icons.eye, run: () => (preview = item) });
     }
     if (item.rich || item.kind === "files") {

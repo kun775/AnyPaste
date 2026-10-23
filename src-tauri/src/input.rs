@@ -23,6 +23,11 @@ use windows::Win32::{
 
 const MODIFIERS: [VIRTUAL_KEY; 5] = [VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN];
 
+/// 当前前台窗口句柄（不区分进程）。
+pub fn foreground_hwnd() -> isize {
+    unsafe { GetForegroundWindow().0 as isize }
+}
+
 /// 当前前台窗口句柄；属于 AnyPaste 自身的窗口不作为粘贴目标。
 pub fn foreground_window() -> Option<isize> {
     unsafe {

@@ -28,7 +28,7 @@ base64 = "0.22"
 rusqlite = { version = "0.40", features = ["bundled"] }
 blake3 = "1.8"
 uuid = { version = "1.28", features = ["v4"] }
-image = { version = "0.25", default-features = false, features = ["png", "bmp"] }
+image = { version = "0.25", default-features = false, features = ["png", "bmp", "jpeg", "gif", "webp"] }
 opendal = { version = "0.57", default-features = false, features = [
   "services-webdav",
   "services-s3",

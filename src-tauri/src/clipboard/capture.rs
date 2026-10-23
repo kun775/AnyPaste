@@ -67,6 +67,12 @@ pub fn prepare(
             if text.len() > max_item_bytes {
                 return Ok(None);
             }
+            // 微信等程序复制图片时放入的是图片文件：生成缩略图并保存副本，原文件被清理后仍可预览
+            let preview = match paths.as_slice() {
+                [single] => image_file_preview(Path::new(single), images_dir, max_item_bytes),
+                _ => None,
+            };
+            let (image_file, thumb) = preview.unzip();
             NewClip {
                 kind: ClipKind::Files,
                 content_hash: hash(b"files", &[text.as_bytes()]),
@@ -74,8 +80,8 @@ pub fn prepare(
                 text: Some(text),
                 html: None,
                 rtf: None,
-                image_file: None,
-                thumb: None,
+                image_file,
+                thumb,
                 source_app,
                 permanent: false,
             }
@@ -127,6 +133,35 @@ pub fn prepare(
         }
     };
     Ok(Some(clip))
+}
+
+/// 可生成预览的图片文件扩展名。
+const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "bmp", "webp"];
+
+/// 为单个图片文件保存 PNG 副本并生成缩略图，返回（副本文件名, 缩略图）。
+/// 只是附加的预览：不是图片、过大或解码失败时返回 `None`，条目仍按文件记录。
+fn image_file_preview(path: &Path, images_dir: &Path, max_item_bytes: usize) -> Option<(String, Vec<u8>)> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    if !IMAGE_EXTS.contains(&ext.as_str()) {
+        return None;
+    }
+    let result = (|| -> anyhow::Result<Option<(String, Vec<u8>)>> {
+        if fs::metadata(path)?.len() as usize > max_item_bytes {
+            return Ok(None);
+        }
+        let img = image::load_from_memory(&fs::read(path)?)?;
+        let rgba = img.to_rgba8();
+        let (w, h) = rgba.dimensions();
+        let pixels = hash(b"image", &[&w.to_le_bytes(), &h.to_le_bytes(), rgba.as_raw()]);
+        let img = DynamicImage::ImageRgba8(rgba);
+        let file_name = format!("{pixels}.png");
+        write_once(&images_dir.join(&file_name), &encode_png(&img)?)?;
+        Ok(Some((file_name, encode_png(&thumbnail(&img))?)))
+    })();
+    result.unwrap_or_else(|e| {
+        log::debug!("图片文件无法生成预览: {e:#}");
+        None
+    })
 }
 
 fn hash(tag: &[u8], parts: &[&[u8]]) -> String {
@@ -242,6 +277,38 @@ mod tests {
         assert!(KindFilter { files: false, ..all }.apply(Captured::Files(vec!["a".into()])).is_none());
         let img = Captured::Image { bytes: vec![], format: ImageFormat::Png };
         assert!(KindFilter { image: false, ..all }.apply(img).is_none());
+    }
+
+    #[test]
+    fn single_image_file_gets_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("wechat.jpg");
+        fs::write(&src, encoded(&DynamicImage::ImageRgb8(sample(600, 300).to_rgb8()), ImageFormat::Jpeg)).unwrap();
+        let images = dir.path().join("images");
+        fs::create_dir_all(&images).unwrap();
+
+        let files = Captured::Files(vec![src.display().to_string()]);
+        let clip = prepare(files, Some("Weixin.exe".into()), &images, MAX).unwrap().unwrap();
+        assert_eq!(clip.kind, ClipKind::Files);
+        assert!(clip.thumb.is_some());
+        assert!(images.join(clip.image_file.unwrap()).exists());
+    }
+
+    #[test]
+    fn other_files_have_no_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let txt = dir.path().join("a.txt");
+        fs::write(&txt, "hi").unwrap();
+        let broken = dir.path().join("broken.png");
+        fs::write(&broken, "not a png").unwrap();
+        for files in [
+            vec![txt.display().to_string()],
+            vec![broken.display().to_string()],
+            vec![txt.display().to_string(), broken.display().to_string()],
+        ] {
+            let clip = prepare(Captured::Files(files), None, dir.path(), MAX).unwrap().unwrap();
+            assert!(clip.thumb.is_none() && clip.image_file.is_none());
+        }
     }
 
     #[test]

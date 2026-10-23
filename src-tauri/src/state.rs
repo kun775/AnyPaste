@@ -19,6 +19,8 @@ pub struct AppState {
     permanent_busy: AtomicBool,
     /// 每次打开弹窗加一；空闲销毁任务据此判断期间是否又打开过。
     popup_generation: AtomicU64,
+    /// 每次弹窗移动加一，用于判断拖动是否已结束。
+    move_generation: AtomicU64,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -76,6 +78,14 @@ impl AppState {
 
     pub fn popup_generation(&self) -> u64 {
         self.popup_generation.load(Ordering::Acquire)
+    }
+
+    pub fn bump_move_generation(&self) -> u64 {
+        self.move_generation.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    pub fn move_generation(&self) -> u64 {
+        self.move_generation.load(Ordering::Acquire)
     }
 }
 

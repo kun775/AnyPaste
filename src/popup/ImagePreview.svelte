@@ -1,6 +1,6 @@
 <script lang="ts">
   import { clipImage, type ClipItem } from "../lib/api";
-  import { formatSize } from "../lib/format";
+  import { fileNames, formatSize } from "../lib/format";
 
   interface Props {
     item: ClipItem;
@@ -30,7 +30,11 @@
 <div class="preview" role="dialog" aria-modal="true" aria-label="图片预览" tabindex="-1" onclick={onclose}>
   <img src={src ?? item.thumb ?? ""} alt="图片 {item.preview}" class:loading={!src} />
   <div class="bar" role="presentation" onclick={(e) => e.stopPropagation()}>
-    <span>{item.preview} · {formatSize(item.sizeBytes)}{error ? ` · ${error}` : ""}</span>
+    <span>
+      {item.kind === "files" ? fileNames(item.preview)[0] : `${item.preview} · ${formatSize(item.sizeBytes)}`}{error
+        ? ` · ${error}`
+        : ""}
+    </span>
     <button class="btn" onclick={onpaste}>粘贴</button>
     <button class="btn" onclick={onclose}>关闭</button>
   </div>
