@@ -69,6 +69,8 @@ pub fn run() {
             commands::paste_clip,
             commands::copy_clip,
             commands::set_permanent,
+            commands::set_pinned,
+            commands::clip_image,
             commands::delete_clip,
             commands::clear_temp,
             commands::get_settings,

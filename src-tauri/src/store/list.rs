@@ -4,14 +4,16 @@ use serde::{Deserialize, Serialize, Serializer};
 
 use super::Store;
 
-/// 每页条数。列表滚动到底部时按游标加载下一页。
+/// 每页条数（不含置顶条目）。列表滚动到底部时按游标加载下一页。
 pub const PAGE_SIZE: usize = 100;
+/// 置顶条目随第一页一并返回的上限。
+const MAX_PINNED: usize = 100;
 /// 列表只传预览文字，避免大段文本拖慢 IPC 和渲染。
 const PREVIEW_CHARS: i64 = 400;
 /// trigram 分词需要至少 3 个字符，更短的查询退化为 LIKE。
 const FTS_MIN_CHARS: usize = 3;
 
-/// 分页游标：上一页最后一条的复制时间和 ID。
+/// 分页游标：上一页最后一条（非置顶）的复制时间和 ID。
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Cursor {
@@ -33,6 +35,7 @@ pub struct ClipItem {
     pub size_bytes: i64,
     pub source_app: Option<String>,
     pub permanent: bool,
+    pub pinned: bool,
     pub last_copied_at: i64,
     pub expires_at: Option<i64>,
 }
@@ -57,7 +60,8 @@ fn visible(now: &str) -> String {
 }
 
 impl Store {
-    /// 按最近复制时间倒序列出一页条目；`search` 为空时不过滤。
+    /// 列出一页条目；`search` 为空时不过滤。第一页（`before` 为空）先返回全部置顶条目
+    /// （按置顶时间倒序），再接按最近复制时间倒序的普通条目；后续页只含普通条目。
     pub fn list_clips(
         &self,
         permanent: bool,
@@ -65,12 +69,31 @@ impl Store {
         before: Option<Cursor>,
         now: i64,
     ) -> rusqlite::Result<Vec<ClipItem>> {
+        let mut items = if before.is_none() {
+            self.query_items(permanent, search, None, now, true)?
+        } else {
+            Vec::new()
+        };
+        items.extend(self.query_items(permanent, search, before, now, false)?);
+        Ok(items)
+    }
+
+    fn query_items(
+        &self,
+        permanent: bool,
+        search: Option<&str>,
+        before: Option<Cursor>,
+        now: i64,
+        pinned: bool,
+    ) -> rusqlite::Result<Vec<ClipItem>> {
         let mut sql = format!(
             "SELECT id, kind, substr(text, 1, {PREVIEW_CHARS}), html IS NOT NULL OR rtf IS NOT NULL,
-                    thumb, size_bytes, source_app, is_permanent, last_copied_at, expires_at
+                    thumb, size_bytes, source_app, is_permanent, last_copied_at, expires_at,
+                    pinned_at IS NOT NULL
              FROM clips
-             WHERE is_permanent = ?1 AND {}",
-            visible("?2")
+             WHERE is_permanent = ?1 AND {} AND pinned_at IS {}",
+            visible("?2"),
+            if pinned { "NOT NULL" } else { "NULL" }
         );
         let mut args: Vec<Value> = vec![(permanent as i64).into(), now.into()];
 
@@ -93,7 +116,11 @@ impl Store {
             }
         }
 
-        sql.push_str(&format!(" ORDER BY last_copied_at DESC, id DESC LIMIT {PAGE_SIZE}"));
+        sql.push_str(&if pinned {
+            format!(" ORDER BY pinned_at DESC, id DESC LIMIT {MAX_PINNED}")
+        } else {
+            format!(" ORDER BY last_copied_at DESC, id DESC LIMIT {PAGE_SIZE}")
+        });
 
         let conn = self.conn();
         let mut stmt = conn.prepare(&sql)?;
@@ -109,6 +136,7 @@ impl Store {
                 permanent: r.get(7)?,
                 last_copied_at: r.get(8)?,
                 expires_at: r.get(9)?,
+                pinned: r.get(10)?,
             })
         })?;
         rows.collect()
@@ -214,6 +242,44 @@ mod tests {
     }
 
     #[test]
+    fn pinned_items_come_first_on_first_page_only() {
+        let store = Store::open_in_memory().unwrap();
+        let texts: Vec<String> = (0..PAGE_SIZE + 3).map(|i| format!("item {i}")).collect();
+        let ids: Vec<i64> = texts
+            .iter()
+            .enumerate()
+            .map(|(i, t)| store.upsert_clip(&text_clip(t), i as i64, 1_000_000).unwrap().id)
+            .collect();
+        // 置顶两条较早的条目，后置顶的排在前面
+        store.set_pinned(ids[0], true, 10).unwrap();
+        store.set_pinned(ids[1], true, 20).unwrap();
+
+        let first = store.list_clips(false, None, None, 0).unwrap();
+        assert_eq!(first[..2].iter().map(|i| i.id).collect::<Vec<_>>(), vec![ids[1], ids[0]]);
+        assert!(first[0].pinned && !first[2].pinned);
+        assert_eq!(first.len(), 2 + PAGE_SIZE);
+
+        let last = first.last().unwrap();
+        let second = store
+            .list_clips(false, None, Some(Cursor { last_copied_at: last.last_copied_at, id: last.id }), 0)
+            .unwrap();
+        // 剩余 1 条普通条目，置顶条目不会重复出现
+        assert_eq!(second.len(), 1);
+        assert!(second.iter().all(|i| !i.pinned));
+
+        // 搜索同样作用于置顶条目；取消置顶后回到时间顺序
+        assert_eq!(ids_of(&store.list_clips(false, Some("item 1"), None, 0).unwrap())[0], ids[1]);
+        store.set_pinned(ids[1], false, 30).unwrap();
+        let after = store.list_clips(false, None, None, 0).unwrap();
+        assert_eq!(after[0].id, ids[0]);
+        assert_eq!(after.iter().filter(|i| i.pinned).count(), 1);
+    }
+
+    fn ids_of(items: &[ClipItem]) -> Vec<i64> {
+        items.iter().map(|i| i.id).collect()
+    }
+
+    #[test]
     fn search_index_follows_deletes() {
         let store = Store::open_in_memory().unwrap();
         let id = seed(&store, &["searchable text"]);
@@ -232,6 +298,7 @@ mod tests {
             size_bytes: 3,
             source_app: None,
             permanent: false,
+            pinned: false,
             last_copied_at: 0,
             expires_at: None,
         };

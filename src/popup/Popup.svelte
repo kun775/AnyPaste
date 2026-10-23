@@ -16,6 +16,7 @@
     openSettings,
     pasteClip,
     setPermanent,
+    setPinned,
     type ClipItem,
     type Counts,
     type Settings,
@@ -26,6 +27,7 @@
   import { applyTheme } from "../lib/theme";
   import ClipRow from "./ClipRow.svelte";
   import ContextMenu, { type MenuEntry } from "./ContextMenu.svelte";
+  import ImagePreview from "./ImagePreview.svelte";
 
   interface Confirm {
     title: string;
@@ -49,6 +51,7 @@
   let confirm = $state<Confirm | null>(null);
   let toast = $state<{ text: string; error: boolean } | null>(null);
   let plainDefault = $state(false);
+  let preview = $state<ClipItem | null>(null);
 
   let searchEl: HTMLInputElement | undefined = $state();
   let listEl: HTMLUListElement | undefined = $state();
@@ -64,7 +67,7 @@
       items = list;
       counts = c;
       paused = p;
-      hasMore = list.length === PAGE_SIZE;
+      hasMore = list.filter((i) => !i.pinned).length === PAGE_SIZE;
       sel = Math.min(sel, Math.max(0, list.length - 1));
       loadError = "";
     } catch (e) {
@@ -77,7 +80,9 @@
   async function loadMore() {
     if (!hasMore || loadingMore || items.length === 0) return;
     const seq = requestSeq;
-    const last = items[items.length - 1];
+    // 游标取最后一条非置顶条目；置顶条目只随第一页返回
+    const last = items.findLast((i) => !i.pinned);
+    if (!last) return;
     loadingMore = true;
     try {
       const more = await listClips(tab, query, { lastCopiedAt: last.lastCopiedAt, id: last.id });
@@ -120,6 +125,7 @@
       onPopupShown(async () => {
         menu = null;
         confirm = null;
+        preview = null;
         query = "";
         sel = 0;
         now = Date.now();
@@ -172,6 +178,16 @@
     run(() => setPermanent(item.id, permanent), permanent ? "已设为永久" : "已转为临时，将按保留时长过期");
   }
 
+  function togglePin(item: ClipItem | undefined) {
+    if (!item) return;
+    const pinned = !item.pinned;
+    run(() => setPinned(item.id, pinned), pinned ? "已置顶" : "已取消置顶");
+    if (pinned) {
+      sel = 0;
+      listEl?.scrollTo({ top: 0 });
+    }
+  }
+
   function remove(item: ClipItem | undefined) {
     if (!item) return;
     if (item.permanent) {
@@ -200,12 +216,21 @@
     const entries: MenuEntry[] = [
       { label: "粘贴", icon: icons.paste, shortcut: "Enter", run: () => paste(item) },
     ];
+    if (item.kind === "image") {
+      entries.push({ label: "预览原图", icon: icons.eye, run: () => (preview = item) });
+    }
     if (item.rich || item.kind === "files") {
       const label = plainDefault ? "保留格式粘贴" : "以纯文本粘贴";
       entries.push({ label, icon: icons.plain, shortcut: "Shift+Enter", run: () => paste(item, true) });
     }
     entries.push(
       { label: "仅复制", icon: icons.copy, run: () => run(() => copyClip(item.id), "已复制到剪贴板") },
+      {
+        label: item.pinned ? "取消置顶" : "置顶",
+        icon: icons.pin,
+        shortcut: "Ctrl+T",
+        run: () => togglePin(item),
+      },
       {
         label: item.permanent ? "转为临时" : "设为永久",
         icon: item.permanent ? icons.clock : icons.star,
@@ -231,6 +256,18 @@
   }
 
   function onKeydown(e: KeyboardEvent) {
+    if (preview) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        preview = null;
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        const item = preview;
+        preview = null;
+        paste(item);
+      }
+      return;
+    }
     if (menu || confirm) {
       if (e.key === "Escape") {
         e.preventDefault();
@@ -265,6 +302,9 @@
     } else if (ctrl && e.key.toLowerCase() === "p") {
       e.preventDefault();
       toggle(item);
+    } else if (ctrl && e.key.toLowerCase() === "t") {
+      e.preventDefault();
+      togglePin(item);
     } else if (ctrl && /^[1-9]$/.test(e.key)) {
       e.preventDefault();
       paste(items[Number(e.key) - 1]);
@@ -285,7 +325,8 @@
 <svelte:window onkeydown={onKeydown} onfocus={() => searchEl?.focus()} onblur={onBlur} />
 
 <main class="popup">
-  <header class="head">
+  <div class="drag" data-tauri-drag-region title="拖动以移动窗口">{@html icons.grip}</div>
+  <header class="head" data-tauri-drag-region>
     <label class="search">
       {@html icons.search}
       <input bind:this={searchEl} bind:value={query} placeholder="搜索剪贴板历史" autocomplete="off" spellcheck="false" />
@@ -293,7 +334,7 @@
     <button class="icon-btn" title="设置" onclick={openSettings}>{@html icons.gear}</button>
   </header>
 
-  <div class="tabs" role="tablist">
+  <div class="tabs" role="tablist" data-tauri-drag-region>
     <button class="tab" class:active={tab === "temp"} role="tab" aria-selected={tab === "temp"} onclick={() => switchTab("temp")}>
       临时 <span class="count">{counts.temp}</span>
     </button>
@@ -316,6 +357,8 @@
           onselect={() => (sel = i)}
           onpaste={() => paste(item)}
           ontoggle={() => toggle(item)}
+          onpin={() => togglePin(item)}
+          onpreview={() => (preview = item)}
           ondelete={() => remove(item)}
           onmenu={(x, y) => openMenu(item, x, y)}
         />
@@ -349,9 +392,21 @@
     <span><kbd>↑↓</kbd> 选择</span>
     <span><kbd>Enter</kbd> 粘贴</span>
     <span><kbd>Ctrl+P</kbd> 永久</span>
+    <span><kbd>Ctrl+T</kbd> 置顶</span>
     <span><kbd>Del</kbd> 删除</span>
-    <span><kbd>Tab</kbd> 切换</span>
   </footer>
+
+  {#if preview}
+    {@const item = preview}
+    <ImagePreview
+      {item}
+      onclose={() => (preview = null)}
+      onpaste={() => {
+        preview = null;
+        paste(item);
+      }}
+    />
+  {/if}
 
   {#if toast}
     <div class="toast" class:error={toast.error} role="status">{toast.text}</div>
@@ -392,10 +447,20 @@
     flex-direction: column;
     background: var(--surface);
   }
+  .drag {
+    height: 12px;
+    display: grid;
+    place-items: center;
+    color: var(--ink-3);
+    cursor: grab;
+  }
+  .drag :global(svg) {
+    pointer-events: none;
+  }
   .head {
     display: flex;
     gap: 6px;
-    padding: 10px 10px 6px;
+    padding: 0 10px 6px;
   }
   .search {
     flex: 1;

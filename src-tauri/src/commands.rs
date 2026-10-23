@@ -128,6 +128,28 @@ pub async fn set_permanent(
 }
 
 #[tauri::command]
+pub async fn set_pinned(app: AppHandle, store: State<'_, Store>, id: i64, pinned: bool) -> CmdResult<()> {
+    store.set_pinned(id, pinned, now_ms()).map_err(err)?;
+    // 置顶只影响本机排序，不需要触发同步，只通知界面刷新
+    if let Err(e) = tauri::Emitter::emit(&app, events::CLIPS_CHANGED, ()) {
+        log::warn!("发送 {} 事件失败: {e}", events::CLIPS_CHANGED);
+    }
+    Ok(())
+}
+
+/// 图片条目的原图（PNG data URL），用于预览。
+#[tauri::command]
+pub async fn clip_image(store: State<'_, Store>, paths: State<'_, AppPaths>, id: i64) -> CmdResult<String> {
+    let content = store.clip_content(id).map_err(err)?.ok_or("条目不存在或已删除")?;
+    let file = content.image_file.ok_or("该条目不是图片")?;
+    let bytes = std::fs::read(paths.images_dir.join(&file)).map_err(|e| format!("读取图片失败: {e}"))?;
+    Ok(format!(
+        "data:image/png;base64,{}",
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)
+    ))
+}
+
+#[tauri::command]
 pub async fn delete_clip(app: AppHandle, store: State<'_, Store>, paths: State<'_, AppPaths>, id: i64) -> CmdResult<()> {
     // 开启同步时永久条目留下墓碑，以便把删除同步到其他设备
     let tombstone = sync::is_enabled(&app) && store.is_permanent(id).map_err(err)?;

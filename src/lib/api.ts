@@ -16,6 +16,8 @@ export interface ClipItem {
   sizeBytes: number;
   sourceApp: string | null;
   permanent: boolean;
+  /** 置顶条目随第一页返回，排在最前，不计入分页。 */
+  pinned: boolean;
   lastCopiedAt: number;
   expiresAt: number | null;
 }
@@ -132,6 +134,9 @@ export const clipCounts = () => invoke<Counts>("clip_counts");
 export const pasteClip = (id: number, plain: boolean) => invoke<{ pasted: boolean }>("paste_clip", { id, plain });
 export const copyClip = (id: number) => invoke<void>("copy_clip", { id });
 export const setPermanent = (id: number, permanent: boolean) => invoke<void>("set_permanent", { id, permanent });
+export const setPinned = (id: number, pinned: boolean) => invoke<void>("set_pinned", { id, pinned });
+/** 图片条目的原图 data URL。 */
+export const clipImage = (id: number) => invoke<string>("clip_image", { id });
 export const deleteClip = (id: number) => invoke<void>("delete_clip", { id });
 export const clearTemp = () => invoke<number>("clear_temp");
 

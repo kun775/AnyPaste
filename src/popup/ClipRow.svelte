@@ -11,11 +11,14 @@
     onselect: () => void;
     onpaste: () => void;
     ontoggle: () => void;
+    onpin: () => void;
+    onpreview: () => void;
     ondelete: () => void;
     onmenu: (x: number, y: number) => void;
   }
 
-  let { item, index, selected, now, onselect, onpaste, ontoggle, ondelete, onmenu }: Props = $props();
+  let { item, index, selected, now, onselect, onpaste, ontoggle, onpin, onpreview, ondelete, onmenu }: Props =
+    $props();
 
   const link = $derived(item.kind === "text" && isUrl(item.preview));
   const icon = $derived(link ? icons.link : icons[item.kind]);
@@ -36,15 +39,20 @@
   }
 </script>
 
+<!-- 单击即粘贴；鼠标移动（而非进入）时才更新选中项，避免键盘滚动列表时被光标下的条目抢走选中 -->
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <li
   class="item"
   class:perm={item.permanent}
+  class:pinned={item.pinned}
   class:sel={selected}
   role="option"
   aria-selected={selected}
-  onclick={onselect}
-  ondblclick={onpaste}
+  title="单击粘贴"
+  onclick={onpaste}
+  onmousemove={() => {
+    if (!selected) onselect();
+  }}
   oncontextmenu={(e) => {
     e.preventDefault();
     onselect();
@@ -61,6 +69,7 @@
       <div class="preview" class:link>{item.preview}</div>
     {/if}
     <div class="meta">
+      {#if item.pinned}<span class="pin-mark" title="已置顶">{@html icons.pinFill}</span>{/if}
       {#if item.rich}<span class="badge">富文本</span>{/if}
       {#if item.sourceApp}<span>{item.sourceApp}</span><span class="dot"></span>{/if}
       <span>{ago(item.lastCopiedAt, now)}</span>
@@ -77,6 +86,12 @@
   </div>
   {#if index < 9}<span class="num">{index + 1}</span>{/if}
   <div class="actions">
+    {#if item.kind === "image"}
+      <button class="act" title="预览原图" onclick={stop(onpreview)}>{@html icons.eye}</button>
+    {/if}
+    <button class="act pin" class:on={item.pinned} title={item.pinned ? "取消置顶" : "置顶"} onclick={stop(onpin)}>
+      {@html item.pinned ? icons.pinFill : icons.pin}
+    </button>
     <button
       class="act star"
       class:on={item.permanent}
@@ -144,7 +159,10 @@
   .thumb {
     display: block;
     max-width: 100%;
-    max-height: 90px;
+    max-height: 140px;
+    min-width: 40px;
+    min-height: 40px;
+    object-fit: contain;
     border-radius: 4px;
     border: 1px solid var(--line);
     background: repeating-conic-gradient(var(--line) 0 25%, transparent 0 50%) 0 0 / 12px 12px;
@@ -241,5 +259,17 @@
   }
   .act.del:hover {
     color: var(--danger);
+  }
+  .act.pin:hover,
+  .act.pin.on {
+    color: var(--accent);
+  }
+  .pin-mark {
+    display: inline-grid;
+    place-items: center;
+    color: var(--accent);
+  }
+  .item.pinned:not(.sel) {
+    border-color: var(--accent-soft);
   }
 </style>

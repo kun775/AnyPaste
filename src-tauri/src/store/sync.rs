@@ -166,7 +166,7 @@ impl Store {
             .optional()?;
         let rows = tx.execute(
             "UPDATE clips SET deleted_at = ?2, updated_at = ?2, text = NULL, html = NULL, rtf = NULL,
-               image_file = NULL, thumb = NULL
+               image_file = NULL, thumb = NULL, pinned_at = NULL
              WHERE id = ?1",
             params![id, now],
         )?;

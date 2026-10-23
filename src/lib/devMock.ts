@@ -30,9 +30,14 @@ const MIN = 60_000;
 const HOUR = 60 * MIN;
 const TTL = 24 * HOUR;
 
-// 1×1 蓝色 PNG，作为图片缩略图占位
+// 渐变示意图，作为图片缩略图占位
 const THUMB =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+  "data:image/svg+xml," +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><defs><linearGradient id="g" x2="1" y2="1">' +
+      '<stop offset="0" stop-color="#5b8def"/><stop offset=".55" stop-color="#9b6cf0"/><stop offset="1" stop-color="#f08bb4"/>' +
+      '</linearGradient></defs><rect width="320" height="180" fill="url(#g)"/><circle cx="230" cy="150" r="70" fill="#fff" opacity=".25"/></svg>',
+  );
 
 function fixtures(): ClipItem[] {
   const now = Date.now();
@@ -48,6 +53,7 @@ function fixtures(): ClipItem[] {
       sizeBytes: preview.length,
       sourceApp: app,
       permanent: false,
+      pinned: false,
       lastCopiedAt,
       expiresAt: lastCopiedAt + TTL,
       ...extra,
@@ -113,13 +119,15 @@ export function installMock(window: "popup" | "settings") {
       switch (cmd) {
         case "list_clips": {
           const before = args.before as Cursor | null;
-          let list = visible(args.tab as Tab, args.query as string | null);
+          const all = visible(args.tab as Tab, args.query as string | null);
+          const pinned = before ? [] : all.filter((i) => i.pinned);
+          let list = all.filter((i) => !i.pinned);
           if (before) {
             list = list.filter(
               (i) => i.lastCopiedAt < before.lastCopiedAt || (i.lastCopiedAt === before.lastCopiedAt && i.id < before.id),
             );
           }
-          return list.slice(0, 100);
+          return [...pinned, ...list.slice(0, 100)];
         }
         case "clip_counts":
           return { temp: visible("temp", null).length, perm: visible("perm", null).length };
@@ -136,6 +144,11 @@ export function installMock(window: "popup" | "settings") {
               : i,
           );
           return null;
+        case "set_pinned":
+          items = items.map((i) => (i.id === id ? { ...i, pinned: args.pinned as boolean } : i));
+          return null;
+        case "clip_image":
+          return items.find((i) => i.id === id)?.thumb ?? THUMB;
         case "delete_clip":
           items = items.filter((i) => i.id !== id);
           return null;

@@ -193,6 +193,15 @@ impl Store {
         Ok(n > 0)
     }
 
+    /// 置顶或取消置顶（只影响排序，不改变过期时间）。返回条目是否存在。
+    pub fn set_pinned(&self, id: i64, pinned: bool, now: i64) -> rusqlite::Result<bool> {
+        let n = self.conn().execute(
+            "UPDATE clips SET pinned_at = ?2 WHERE id = ?1 AND deleted_at IS NULL",
+            params![id, pinned.then_some(now)],
+        )?;
+        Ok(n > 0)
+    }
+
     /// 最近复制且未过期的临时条目。
     pub fn latest_temp(&self, now: i64) -> rusqlite::Result<Option<i64>> {
         let row = self.conn().query_row(
