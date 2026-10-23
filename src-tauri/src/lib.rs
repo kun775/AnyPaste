@@ -14,6 +14,7 @@ mod state;
 mod store;
 mod sync;
 mod tray;
+mod updater;
 mod windows;
 #[cfg(windows)]
 mod winv;
@@ -57,6 +58,7 @@ pub fn run() {
         .plugin(hotkey::plugin())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState::default())
         .manage(Hotkeys::default())
         .manage(paths)
@@ -84,6 +86,10 @@ pub fn run() {
             commands::save_sync,
             commands::test_sync,
             commands::sync_now,
+            commands::get_update_status,
+            commands::check_update,
+            commands::install_update,
+            commands::open_link,
             commands::app_info,
         ])
         .setup(|app| {
@@ -105,6 +111,7 @@ pub fn run() {
             tray::create(app.handle(), &settings, prefs::autostart_enabled(app.handle()), sync_on)?;
             janitor::spawn(app.handle().clone());
             sync::spawn(app.handle().clone());
+            updater::spawn(app.handle().clone());
             #[cfg(windows)]
             clipboard::spawn(app.handle().clone());
             // 热键冲突不影响启动，仍可从托盘使用，并可在设置中更换

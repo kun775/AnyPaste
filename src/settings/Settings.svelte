@@ -19,6 +19,7 @@
   import ConfirmDialog from "../lib/ConfirmDialog.svelte";
   import { formatSize } from "../lib/format";
   import { applyTheme } from "../lib/theme";
+  import AboutPane from "./AboutPane.svelte";
   import AppList from "./AppList.svelte";
   import HotkeyInput from "./HotkeyInput.svelte";
   import SyncPane from "./SyncPane.svelte";
@@ -298,15 +299,7 @@
       <SyncPane toast={showToast} />
     {:else}
       <h1>关于</h1>
-      <div class="row">
-        <div class="rt"><b>AnyPaste {info?.version ?? ""}</b><small>本地剪贴板历史</small></div>
-      </div>
-      <div class="row">
-        <div class="rt"><b>数据目录</b><small class="path">{info?.dataDir ?? ""}</small></div>
-      </div>
-      <div class="row">
-        <div class="rt"><b>日志目录</b><small class="path">{info?.logDir ?? ""}</small></div>
-      </div>
+      <AboutPane {info} settings={s} {save} toast={showToast} />
     {/if}
   </main>
 

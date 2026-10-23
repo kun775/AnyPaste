@@ -12,6 +12,7 @@ use crate::{
     state::AppState,
     store::{now_ms, ClipItem, Counts, Cursor, Store},
     sync::{self, SecretsInput, SyncConfig, SyncService, SyncStatus},
+    updater::{self, UpdateInfo, UpdateService, UpdateStatus},
     windows,
 };
 
@@ -315,12 +316,49 @@ pub async fn sync_now(app: AppHandle) -> CmdResult<()> {
     Ok(())
 }
 
+#[tauri::command]
+pub async fn get_update_status(app: AppHandle) -> UpdateStatus {
+    app.state::<UpdateService>().status()
+}
+
+#[tauri::command]
+pub async fn check_update(app: AppHandle) -> CmdResult<Option<UpdateInfo>> {
+    updater::check(&app).await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn install_update(app: AppHandle) -> CmdResult<()> {
+    updater::install(&app).await.map_err(err)
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Link {
+    Repo,
+    Releases,
+    Issues,
+}
+
+/// 用默认浏览器打开项目页面（只允许固定的几个地址）。
+#[tauri::command]
+pub async fn open_link(link: Link) -> CmdResult<()> {
+    let url = match link {
+        Link::Repo => updater::REPO_URL.to_string(),
+        Link::Releases => updater::RELEASES_URL.to_string(),
+        Link::Issues => format!("{}/issues", updater::REPO_URL),
+    };
+    std::process::Command::new("explorer.exe").arg(url).spawn().map_err(err)?;
+    Ok(())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppInfo {
     version: String,
     data_dir: String,
     log_dir: String,
+    repo_url: &'static str,
+    portable: bool,
 }
 
 #[tauri::command]
@@ -329,5 +367,7 @@ pub fn app_info(app: AppHandle, paths: State<'_, AppPaths>) -> AppInfo {
         version: app.package_info().version.to_string(),
         data_dir: paths.data_dir.display().to_string(),
         log_dir: paths.log_dir.display().to_string(),
+        repo_url: updater::REPO_URL,
+        portable: paths.portable,
     }
 }

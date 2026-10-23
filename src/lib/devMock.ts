@@ -2,7 +2,7 @@
 // 仅在 `import.meta.env.DEV` 下被动态导入，不会进入生产包。
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
-import type { ClipItem, Cursor, Settings, SyncConfig, SyncStatus, Tab } from "./api";
+import type { ClipItem, Cursor, Settings, SyncConfig, SyncStatus, Tab, UpdateStatus } from "./api";
 
 const DEFAULT_SETTINGS: Settings = {
   closeToTray: true,
@@ -15,6 +15,8 @@ const DEFAULT_SETTINGS: Settings = {
   hotkeyPermanent: "ctrl+shift+c",
   takeOverWinV: false,
   notifyPermanent: true,
+  autoCheckUpdate: true,
+  autoInstallUpdate: false,
   terminalApps: ["WindowsTerminal.exe", "conhost.exe", "pwsh.exe"],
   ignoredApps: ["KeePassXC.exe", "1Password.exe"],
   tempTtlSecs: 86400,
@@ -84,6 +86,15 @@ export function installMock(window: "popup" | "settings") {
   let settings = { ...DEFAULT_SETTINGS };
   let autostart = false;
   let winVActive = false;
+  let update: UpdateStatus = {
+    checking: false,
+    installing: false,
+    progress: null,
+    available: null,
+    lastCheckedAt: null,
+    error: null,
+    portable: false,
+  };
   const view = () => ({ settings, autostart, winVReleased: settings.takeOverWinV, winVActive });
   let sync: SyncConfig = {
     enabled: false,
@@ -211,7 +222,29 @@ export function installMock(window: "popup" | "settings") {
         case "storage_stats":
           return { temp: visible("temp", null).length, perm: visible("perm", null).length, bytes: 18_400_000 };
         case "app_info":
-          return { version: "0.1.0-dev", dataDir: "C:\\Users\\me\\AppData\\Roaming\\AnyPaste", logDir: "C:\\Users\\me\\AppData\\Roaming\\AnyPaste\\logs" };
+          return {
+            version: "0.3.0-dev",
+            dataDir: "C:\\Users\\me\\AppData\\Roaming\\AnyPaste",
+            logDir: "C:\\Users\\me\\AppData\\Roaming\\AnyPaste\\logs",
+            repoUrl: "https://github.com/kun775/AnyPaste",
+            portable: false,
+          };
+        case "get_update_status":
+          return update;
+        case "check_update":
+          update = {
+            ...update,
+            lastCheckedAt: Date.now(),
+            available: { version: "0.4.0", notes: "- 新增功能示例\n- 修复问题示例", date: null },
+          };
+          setTimeout(() => emit("update-status", update));
+          return update.available;
+        case "install_update":
+          update = { ...update, installing: true, progress: 0.35 };
+          setTimeout(() => emit("update-status", update));
+          return null;
+        case "open_link":
+          return null;
         default:
           return null;
       }

@@ -36,6 +36,25 @@ export interface AppInfo {
   version: string;
   dataDir: string;
   logDir: string;
+  repoUrl: string;
+  portable: boolean;
+}
+
+export interface UpdateInfo {
+  version: string;
+  notes: string | null;
+  date: string | null;
+}
+
+export interface UpdateStatus {
+  checking: boolean;
+  installing: boolean;
+  /** 下载进度 0–1；总大小未知时为 null。 */
+  progress: number | null;
+  available: UpdateInfo | null;
+  lastCheckedAt: number | null;
+  error: string | null;
+  portable: boolean;
 }
 
 export type Theme = "system" | "light" | "dark";
@@ -54,6 +73,8 @@ export interface Settings {
   hotkeyPermanent: string;
   takeOverWinV: boolean;
   notifyPermanent: boolean;
+  autoCheckUpdate: boolean;
+  autoInstallUpdate: boolean;
   terminalApps: string[];
   ignoredApps: string[];
   tempTtlSecs: number;
@@ -155,7 +176,14 @@ export const syncNow = () => invoke<void>("sync_now");
 export const onSyncStatus = (cb: (s: SyncStatus) => void): Promise<UnlistenFn> =>
   listen<SyncStatus>("sync-status", (e) => cb(e.payload));
 
-export const onClipsChanged =(cb: () => void): Promise<UnlistenFn> => listen("clips-changed", cb);
+export const getUpdateStatus = () => invoke<UpdateStatus>("get_update_status");
+export const checkUpdate = () => invoke<UpdateInfo | null>("check_update");
+export const installUpdate = () => invoke<void>("install_update");
+export const openLink = (link: "repo" | "releases" | "issues") => invoke<void>("open_link", { link });
+export const onUpdateStatus = (cb: (s: UpdateStatus) => void): Promise<UnlistenFn> =>
+  listen<UpdateStatus>("update-status", (e) => cb(e.payload));
+
+export const onClipsChanged = (cb: () => void): Promise<UnlistenFn> => listen("clips-changed", cb);
 export const onPopupShown = (cb: () => void): Promise<UnlistenFn> => listen("popup-shown", cb);
 export const onSettingsChanged = (cb: (s: Settings) => void): Promise<UnlistenFn> =>
   listen<Settings>("settings-changed", (e) => cb(e.payload));

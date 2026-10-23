@@ -52,6 +52,10 @@ pub struct Settings {
     /// 接管 Win+V：在注册表中让出系统热键，并注册为打开剪贴板历史。
     pub take_over_win_v: bool,
     pub notify_permanent: bool,
+    /// 每天自动检查一次更新，发现新版本时发送通知。
+    pub auto_check_update: bool,
+    /// 发现新版本后自动下载并安装（便携版不生效）。
+    pub auto_install_update: bool,
     /// 永久复制时改用 Ctrl+Insert 的程序。
     pub terminal_apps: Vec<String>,
     /// 来自这些程序的复制不记录（永久复制除外）。
@@ -79,6 +83,8 @@ impl Default for Settings {
             hotkey_permanent: "ctrl+shift+c".into(),
             take_over_win_v: false,
             notify_permanent: true,
+            auto_check_update: true,
+            auto_install_update: false,
             terminal_apps: [
                 "WindowsTerminal.exe",
                 "OpenConsole.exe",

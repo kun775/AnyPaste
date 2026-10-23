@@ -13,19 +13,23 @@ pub struct AppPaths {
     pub db_file: PathBuf,
     pub images_dir: PathBuf,
     pub log_dir: PathBuf,
+    /// 便携模式（不支持自动安装更新）。
+    pub portable: bool,
 }
 
 impl AppPaths {
     /// 解析并创建所有目录，在 Tauri 启动前调用（日志插件需要日志目录）。
     pub fn init() -> io::Result<Self> {
         let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf));
-        let data_dir = match exe_dir.as_deref().and_then(portable_data_dir) {
+        let portable_dir = exe_dir.as_deref().and_then(portable_data_dir);
+        let portable = portable_dir.is_some();
+        let data_dir = match portable_dir {
             Some(dir) => dir,
             None => dirs::data_dir()
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "无法定位系统数据目录"))?
                 .join("AnyPaste"),
         };
-        let paths = Self::under(data_dir);
+        let paths = Self { portable, ..Self::under(data_dir) };
         fs::create_dir_all(&paths.images_dir)?;
         fs::create_dir_all(&paths.log_dir)?;
         Ok(paths)
@@ -37,6 +41,7 @@ impl AppPaths {
             images_dir: data_dir.join("images"),
             log_dir: data_dir.join("logs"),
             data_dir,
+            portable: false,
         }
     }
 }

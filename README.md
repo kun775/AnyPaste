@@ -35,6 +35,7 @@
 - **快捷键**：自定义两个热键（冲突时自动恢复原热键）；接管 `Win+V`（修改注册表 `DisabledHotkeys` 并重启资源管理器后生效，关闭即恢复系统热键）；永久复制改用 `Ctrl+Insert` 的终端程序列表。
 - **存储**：临时条目保留时长（修改后对已有条目生效）、数量上限、单条大小上限、记录的内容类型、忽略的应用、清空临时历史。
 - **云同步**：把永久条目同步到 WebDAV（坚果云、Nextcloud 等）或 S3 兼容存储（AWS S3、Cloudflare R2、MinIO、阿里云 OSS 等）。可开启端到端加密，所有设备需使用相同的同步口令。密码与口令保存在 Windows 凭据管理器中。同步设计见 [docs/PLAN.md](docs/PLAN.md#33-云同步设计)。
+- **关于**：版本信息、检查更新与一键安装、自动检查更新（每天一次，发现新版本时通知）、自动安装更新（默认关闭；便携版不支持），以及项目 GitHub 地址。更新包下载后会用内置公钥校验签名，校验失败不会安装。
 
 ## 环境要求
 
@@ -86,6 +87,26 @@ npm run tauri build -- --bundles nsis
 
 **便携版**：把 `src-tauri/target/release/anypaste.exe` 放进任意目录，并在同一目录新建一个名为 `portable` 的空文件，数据就会保存在该目录的 `data` 子目录中。CI 会同时产出 `AnyPaste-portable-x64.zip`。
 
+## 发布
+
+发布由 [release 工作流](.github/workflows/release.yml) 完成：构建并签名安装包、创建 GitHub Release（附安装包、签名、便携版与 `latest.json`），并把 `latest.json` 上传到固定标签 `updater` 的发布中，供程序检查更新。
+
+1. 把 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 中的版本号改为新版本并提交。
+2. 创建附注标签，标签内容即发布说明，然后推送：
+
+   ```bash
+   git tag -a v0.3.0 -F notes.md
+   git push origin master v0.3.0
+   ```
+
+   标签名含 `-`（如 `v0.3.0-beta.1`）时发布为预发布版。
+
+**签名密钥**：更新包用 Tauri updater 的密钥签名，公钥写在 `tauri.conf.json` 中，私钥保存在仓库 Secret `TAURI_SIGNING_PRIVATE_KEY`（无口令）。私钥一旦丢失，已安装的版本将无法再自动更新，请妥善备份。本地签名构建：
+
+```bash
+TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/anypaste-updater.key)" TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" npm run tauri build -- --bundles nsis --config src-tauri/tauri.release.conf.json
+```
+
 ## 目录
 
 | 路径 | 说明 |
@@ -98,6 +119,7 @@ npm run tauri build -- --bundles nsis
 | `src-tauri/src/input.rs` | 记录前台窗口、模拟 Ctrl+V 粘贴与复制 |
 | `src-tauri/src/settings.rs`、`prefs.rs` | 设置模型与校验；设置变更的统一入口（热键、托盘、过期时间同步） |
 | `src-tauri/src/hotkey.rs`、`winv.rs`、`permanent.rs` | 全局热键、接管 Win+V、永久复制流程 |
+| `src-tauri/src/updater.rs` | 检查与安装更新、定时检查 |
 | `src-tauri/src/sync/` | 云同步：配置与凭据、后台调度（`mod.rs`）、同步引擎（`engine.rs`）、加密（`crypto.rs`） |
 | `src-tauri/src/store/` | SQLite 存储、迁移脚本、采集设置 |
 | `src-tauri/src/janitor.rs` | 过期与超量临时条目清理、孤立图片清理 |

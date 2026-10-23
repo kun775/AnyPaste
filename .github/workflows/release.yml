@@ -1,0 +1,101 @@
+name: release
+
+# 推送 v* 标签时构建并签名安装包、创建 GitHub Release，并更新自动更新清单。
+# 发布说明取自附注标签的内容（git tag -a v0.3.0 -m "..."）；标签含 "-"（如 v0.3.0-beta.1）时发布为预发布版。
+# 需要仓库 Secret：TAURI_SIGNING_PRIVATE_KEY（更新签名私钥，与 tauri.conf.json 中的公钥配对）。
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.ref_name }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 读取附注标签内容需要完整历史与标签对象
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Check version matches tag
+        run: |
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ("v$version" -ne $env:TAG) { throw "标签 $env:TAG 与 tauri.conf.json 中的版本号 $version 不一致" }
+          "VERSION=$version" >> $env:GITHUB_ENV
+
+      - run: npm ci
+
+      - name: Build signed installer
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: npm run tauri build -- --bundles nsis --config src-tauri/tauri.release.conf.json
+
+      - name: Package assets
+        run: |
+          $nsis = "src-tauri/target/release/bundle/nsis"
+          $setup = "AnyPaste_$($env:VERSION)_x64-setup.exe"
+          New-Item -ItemType Directory -Force dist-release, portable | Out-Null
+          Copy-Item "$nsis/$setup", "$nsis/$setup.sig" dist-release/
+          # 便携版：程序旁的 portable 文件让数据保存在程序目录的 data 子目录中
+          Copy-Item src-tauri/target/release/anypaste.exe portable/AnyPaste.exe
+          New-Item -ItemType File portable/portable | Out-Null
+          Compress-Archive -Path portable/* -DestinationPath dist-release/AnyPaste-portable-x64.zip
+
+          $notes = (git tag -l --format='%(contents)' $env:TAG) -join "`n"
+          $hashes = Get-ChildItem dist-release -Exclude *.sig | ForEach-Object { "$((Get-FileHash $_).Hash)  $($_.Name)" }
+          $body = $notes.Trim() + "`n`n## 校验（SHA256）`n`n``````n" + ($hashes -join "`n") + "`n``````n"
+          Set-Content notes.md $body -Encoding utf8NoBOM
+
+          # 自动更新清单：签名覆盖安装包本身，客户端用内置公钥校验
+          $manifest = [ordered]@{
+            version   = $env:VERSION
+            notes     = $notes.Trim()
+            pub_date  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            platforms = @{
+              "windows-x86_64" = @{
+                signature = (Get-Content "dist-release/$setup.sig" -Raw).Trim()
+                url       = "https://github.com/${{ github.repository }}/releases/download/$($env:TAG)/$setup"
+              }
+            }
+          }
+          $manifest | ConvertTo-Json -Depth 5 | Set-Content dist-release/latest.json -Encoding utf8NoBOM
+
+      - name: Create release
+        run: |
+          $ghArgs = @("release", "create", $env:TAG, "--title", "AnyPaste $($env:VERSION)", "--notes-file", "notes.md")
+          if ($env:TAG.Contains("-")) { $ghArgs += "--prerelease" }
+          $ghArgs += (Get-ChildItem dist-release).FullName
+          gh @ghArgs
+          if ($LASTEXITCODE -ne 0) { throw "创建 Release 失败" }
+
+      # 清单放在固定标签 updater 的发布中：releases/latest 会跳过预发布版，固定地址则不受影响
+      - name: Publish update manifest
+        run: |
+          gh release view updater *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create updater --title "自动更新清单" --notes "供 AnyPaste 自动更新读取，请勿删除。" --prerelease --target $env:GITHUB_SHA
+            if ($LASTEXITCODE -ne 0) { throw "创建 updater 发布失败" }
+          }
+          gh release upload updater dist-release/latest.json --clobber
+          if ($LASTEXITCODE -ne 0) { throw "上传更新清单失败" }
