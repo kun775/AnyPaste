@@ -95,11 +95,11 @@ npm run tauri build -- --bundles nsis
 2. 创建附注标签，标签内容即发布说明，然后推送：
 
    ```bash
-   git tag -a v0.3.0 -F notes.md
+   git tag -a v0.3.0 --cleanup=verbatim -F notes.md
    git push origin master v0.3.0
    ```
 
-   标签名含 `-`（如 `v0.3.0-beta.1`）时发布为预发布版。
+   标签名含 `-`（如 `v0.3.0-beta.1`）时发布为预发布版。`--cleanup=verbatim` 不能省略，否则 Markdown 标题（以 `#` 开头的行）会被当作注释删掉。
 
 **签名密钥**：更新包用 Tauri updater 的密钥签名，公钥写在 `tauri.conf.json` 中，私钥保存在仓库 Secret `TAURI_SIGNING_PRIVATE_KEY`（无口令）。私钥一旦丢失，已安装的版本将无法再自动更新，请妥善备份。本地签名构建：
 
