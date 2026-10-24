@@ -31,6 +31,10 @@ pub fn write(content: ClipContent, plain: bool, images_dir: &Path) -> anyhow::Re
     let f = formats();
     let _guard = open_with_retry()?;
     raw::empty().context("清空剪贴板失败")?;
+    // 标记最先写入：后续某个格式写入失败时，监听器也不会把这份残缺内容当作新条目记录
+    if let Some(own) = f.own {
+        raw::set_without_clear(own.get(), &[1]).context("写入 AnyPaste 标记失败")?;
+    }
 
     match &payload {
         Payload::Text { text, html, rtf } => {
@@ -54,10 +58,6 @@ pub fn write(content: ClipContent, plain: bool, images_dir: &Path) -> anyhow::Re
                 raw::set_without_clear(fmt.get(), png).context("写入 PNG 失败")?;
             }
         }
-    }
-
-    if let Some(own) = f.own {
-        raw::set_without_clear(own.get(), &[1]).context("写入 AnyPaste 标记失败")?;
     }
     Ok(())
 }
