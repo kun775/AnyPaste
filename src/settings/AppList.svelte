@@ -28,7 +28,7 @@
     {placeholder}
     spellcheck="false"
     onkeydown={(e) => {
-      if (e.key === "Enter") {
+      if (e.key === "Enter" && !e.isComposing) {
         e.preventDefault();
         add();
       }

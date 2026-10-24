@@ -256,6 +256,8 @@
   }
 
   function onKeydown(e: KeyboardEvent) {
+    // 输入法组字期间的按键（如回车上屏、Esc 取消候选）交给输入法处理
+    if (e.isComposing || e.keyCode === 229) return;
     if (preview) {
       if (e.key === "Escape") {
         e.preventDefault();
