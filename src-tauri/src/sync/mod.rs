@@ -376,6 +376,9 @@ async fn run(app: &AppHandle) {
     let svc = app.state::<SyncService>();
     let _guard = svc.running.lock().await;
     svc.update_status(app, |s| s.state = SyncState::Syncing);
+    // 在开始前取指纹：同步期间本机的新改动会让指纹与之不同，下次本地变化触发时不会被误判为已同步。
+    // 代价是本轮下载造成的变化会再触发一次（无事可做的）同步。
+    let before = app.state::<Store>().sync_fingerprint().ok();
 
     let result = match tokio::time::timeout(RUN_TIMEOUT, run_once(app)).await {
         Ok(r) => r.map_err(friendly),
@@ -385,7 +388,7 @@ async fn run(app: &AppHandle) {
         Ok(report) => {
             let now = now_ms();
             let _ = app.state::<Store>().put_setting(LAST_SYNC_KEY, &now.to_string());
-            *svc.synced.lock().unwrap_or_else(|e| e.into_inner()) = app.state::<Store>().sync_fingerprint().ok();
+            *svc.synced.lock().unwrap_or_else(|e| e.into_inner()) = before;
             log::info!(
                 "同步完成：上传 {}，下载 {}，删除 {}",
                 report.uploaded,
