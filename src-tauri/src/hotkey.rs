@@ -66,10 +66,9 @@ pub fn apply(app: &AppHandle, settings: &Settings) -> anyhow::Result<()> {
         .with_context(|| format!("热键 {} 注册失败，可能已被其他程序占用", display(&settings.hotkey_permanent)))?;
 
     // Win+V 由系统占用时注册会失败，属于预期情况（需重启资源管理器），不视为错误
-    let win_v = settings.take_over_win_v
-        && settings.hotkey_open != WIN_V
-        && bind(app, Action::OpenPopup, WIN_V).is_ok();
-    app.state::<Hotkeys>().win_v_active.store(win_v || settings.hotkey_open == WIN_V, Ordering::Relaxed);
+    let open_is_win_v = is_win_v(&settings.hotkey_open);
+    let win_v = settings.take_over_win_v && !open_is_win_v && bind(app, Action::OpenPopup, WIN_V).is_ok();
+    app.state::<Hotkeys>().win_v_active.store(win_v || open_is_win_v, Ordering::Relaxed);
     log::info!(
         "已注册热键 {}、{}{}",
         settings.hotkey_open,
@@ -95,6 +94,14 @@ fn bind(app: &AppHandle, action: Action, accel: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 按解析后的组合键比较，`Super+V`、`cmd+v` 等写法都视为 Win+V。
+fn is_win_v(accel: &str) -> bool {
+    match (accel.parse::<Shortcut>(), WIN_V.parse::<Shortcut>()) {
+        (Ok(a), Ok(b)) => a.id() == b.id(),
+        _ => false,
+    }
+}
+
 /// `ctrl+shift+c` → `Ctrl+Shift+C`，用于提示信息。
 fn display(accel: &str) -> String {
     accel
@@ -112,7 +119,16 @@ fn display(accel: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::display;
+    use super::{display, is_win_v};
+
+    #[test]
+    fn win_v_spellings_match() {
+        assert!(is_win_v("super+v"));
+        assert!(is_win_v("Super+V"));
+        assert!(is_win_v("cmd+v"));
+        assert!(!is_win_v("ctrl+v"));
+        assert!(!is_win_v("not a key"));
+    }
 
     #[test]
     fn display_is_readable() {
