@@ -142,6 +142,12 @@ fn parse_name(name: &str) -> Option<(&str, i64, bool)> {
     }
 }
 
+/// 本地图片均以 `<内容哈希>.png` 命名；只接受由字母、数字、`-`、`_` 组成主名的 PNG 文件名。
+fn is_safe_image_name(name: &str) -> bool {
+    name.strip_suffix(".png")
+        .is_some_and(|stem| !stem.is_empty() && stem.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'))
+}
+
 async fn list_remote(op: &Operator) -> anyhow::Result<HashMap<String, RemoteItem>> {
     let entries = match op.list(CLIPS).await {
         Ok(entries) => entries,
@@ -293,6 +299,10 @@ impl Sync<'_> {
         let data = self.op.read(path).await.with_context(|| format!("下载 {path} 失败"))?.to_vec();
         let rec: ClipRecord = serde_json::from_slice(&self.open(data)?).with_context(|| format!("{path} 内容无效"))?;
         if let Some(file) = &rec.image_file {
+            // 文件名来自云端，会与本地图片目录拼接后写入、日后删除，必须是单段文件名
+            if !is_safe_image_name(file) {
+                bail!("{path} 中的图片文件名无效");
+            }
             self.download_blob(&rec.content_hash, file).await?;
         }
         self.store.apply_remote_record(&rec)?;
@@ -377,6 +387,33 @@ mod tests {
         assert_eq!(parse_name("abc.x.rec"), None);
         assert_eq!(parse_name(".1.rec"), None);
         assert_eq!(parse_name("readme.txt"), None);
+    }
+
+    #[test]
+    fn image_names_must_be_single_segment() {
+        assert!(is_safe_image_name("0123abcdef.png"));
+        assert!(is_safe_image_name("img_1-a.png"));
+        for bad in ["..\\..\\evil.bat", "../a.png", "a\\b.png", "C:a.png", ".png", "a.png.exe", "a b.png", "a.PNG"] {
+            assert!(!is_safe_image_name(bad), "{bad}");
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_traversal_in_remote_image_name() {
+        let op = memory();
+        let (a, b) = (Device::new(), Device::new());
+        // 伪造一条图片文件名越出图片目录的云端记录
+        let clip = NewClip { image_file: Some("..\\evil.png".into()), permanent: true, ..text_clip("bad") };
+        a.store.upsert_clip(&clip, 10, TTL).unwrap();
+        let rec = a.store.clip_record(&clip.content_hash).unwrap().unwrap();
+        op.write(META, serde_json::to_vec(&Meta { format: FORMAT, encryption: None }).unwrap()).await.unwrap();
+        op.write(&format!("{CLIPS}{}.{}.rec", clip.content_hash, rec.updated_at), serde_json::to_vec(&rec).unwrap())
+            .await
+            .unwrap();
+        op.write(&format!("{BLOBS}{}", clip.content_hash), b"evil".to_vec()).await.unwrap();
+
+        assert!(b.sync(&op, None, 100).await.unwrap_err().to_string().contains("图片文件名无效"));
+        assert!(b.perm_texts().is_empty());
     }
 
     #[tokio::test]
