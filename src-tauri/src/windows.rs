@@ -176,7 +176,10 @@ fn schedule_release(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(secs)).await;
-        if app.state::<AppState>().popup_generation() != generation {
+        // 期间重新打开过，或已改为常驻
+        if app.state::<AppState>().popup_generation() != generation
+            || app.state::<SettingsState>().get().popup_release_secs == 0
+        {
             return;
         }
         if let Some(popup) = app.get_webview_window(POPUP) {
