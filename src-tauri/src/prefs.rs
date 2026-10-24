@@ -45,14 +45,19 @@ pub fn update(app: &AppHandle, next: Settings) -> anyhow::Result<Settings> {
     app.state::<AppState>().set_paused(next.paused);
     tray::sync(app, &next);
 
+    // 设置此时已保存并生效，后续整理失败只记录日志，不再向前端报错，否则界面会以为修改未生效
     let mut clips_changed = false;
     if prev.temp_ttl_secs != next.temp_ttl_secs {
-        let n = store.recompute_expiry(next.capture().ttl_ms)?;
-        log::info!("保留时长改为 {} 秒，已重算 {n} 条临时条目的过期时间", next.temp_ttl_secs);
+        match store.recompute_expiry(next.capture().ttl_ms) {
+            Ok(n) => log::info!("保留时长改为 {} 秒，已重算 {n} 条临时条目的过期时间", next.temp_ttl_secs),
+            Err(e) => log::error!("重算临时条目过期时间失败: {e}"),
+        }
         clips_changed = true;
     }
     if prev.temp_ttl_secs != next.temp_ttl_secs || prev.temp_max_items != next.temp_max_items {
-        janitor::cleanup(&store, &app.state::<AppPaths>(), &next.capture(), now_ms())?;
+        if let Err(e) = janitor::cleanup(&store, &app.state::<AppPaths>(), &next.capture(), now_ms()) {
+            log::error!("按新设置清理临时条目失败: {e:#}");
+        }
         clips_changed = true;
     }
     if prev.popup_release_secs != next.popup_release_secs {
