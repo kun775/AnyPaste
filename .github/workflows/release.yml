@@ -22,19 +22,19 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # 读取附注标签内容需要完整历史与标签对象
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
 
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: src-tauri -> target
 
@@ -45,6 +45,10 @@ jobs:
           "VERSION=$version" >> $env:GITHUB_ENV
 
       - run: npm ci
+
+      # Cargo.lock 与 Cargo.toml 不一致时失败，避免发布构建悄悄解析出未经测试的依赖版本
+      - run: cargo fetch --locked
+        working-directory: src-tauri
 
       - name: Build signed installer
         env:
