@@ -221,7 +221,7 @@ impl Sync<'_> {
                     }
                 }
                 _ if remote_newer => {
-                    let (_, del, path) = latest.as_ref().expect("remote_newer 意味着云端存在版本");
+                    let (version, del, path) = latest.as_ref().expect("remote_newer 意味着云端存在版本");
                     if *del {
                         if entry.state != LocalState::Local {
                             let d = self.store.apply_remote_delete(&entry.content_hash)?;
@@ -229,7 +229,7 @@ impl Sync<'_> {
                             removed_images.extend(d.image_files);
                         }
                     } else {
-                        self.download(path).await?;
+                        self.download(path, *version).await?;
                         report.downloaded += 1;
                     }
                 }
@@ -240,8 +240,8 @@ impl Sync<'_> {
 
         // 仅云端存在的条目：本机没有过，下载有效内容；删除标记无需处理
         for item in remote.values() {
-            if let Some((_, false, path)) = item.latest() {
-                self.download(path).await?;
+            if let Some((version, false, path)) = item.latest() {
+                self.download(path, version).await?;
                 report.downloaded += 1;
             }
             self.cleanup(item, None).await?;
@@ -295,9 +295,14 @@ impl Sync<'_> {
         Ok(())
     }
 
-    async fn download(&self, path: &str) -> anyhow::Result<()> {
+    /// `version` 取自对象名。对象名不受加密保护，须与内容中的版本一致，
+    /// 否则云端把旧版本改名为新版本号即可让各设备回退，并在每轮同步中反复下载。
+    async fn download(&self, path: &str, version: i64) -> anyhow::Result<()> {
         let data = self.op.read(path).await.with_context(|| format!("下载 {path} 失败"))?.to_vec();
         let rec: ClipRecord = serde_json::from_slice(&self.open(data)?).with_context(|| format!("{path} 内容无效"))?;
+        if rec.updated_at != version {
+            bail!("{path} 的版本与内容不一致");
+        }
         if let Some(file) = &rec.image_file {
             // 文件名来自云端，会与本地图片目录拼接后写入、日后删除，必须是单段文件名
             if !is_safe_image_name(file) {
@@ -396,6 +401,24 @@ mod tests {
         for bad in ["..\\..\\evil.bat", "../a.png", "a\\b.png", "C:a.png", ".png", "a.png.exe", "a b.png", "a.PNG"] {
             assert!(!is_safe_image_name(bad), "{bad}");
         }
+    }
+
+    #[tokio::test]
+    async fn rejects_renamed_old_version() {
+        let op = memory();
+        let (a, b) = (Device::new(), Device::new());
+        perm(&a.store, "old", 10);
+        a.sync(&op, Some("pw"), 100).await.unwrap();
+
+        // 云端把对象改名为更高的版本号，内容仍是旧版本
+        let name = remote_names(&op).await.remove(0);
+        let (id, version, _) = parse_name(&name).unwrap();
+        let body = op.read(&format!("{CLIPS}{name}")).await.unwrap().to_vec();
+        op.write(&format!("{CLIPS}{id}.{}.rec", version + 1000), body).await.unwrap();
+        op.delete(&format!("{CLIPS}{name}")).await.unwrap();
+
+        assert!(b.sync(&op, Some("pw"), 100).await.unwrap_err().to_string().contains("版本与内容不一致"));
+        assert!(b.perm_texts().is_empty());
     }
 
     #[tokio::test]
