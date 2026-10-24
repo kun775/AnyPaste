@@ -1,7 +1,7 @@
 use std::{fs, io::Cursor, path::Path};
 
 use anyhow::Context;
-use image::{DynamicImage, ImageFormat};
+use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits, RgbaImage};
 
 use crate::{
     settings::Settings,
@@ -106,8 +106,7 @@ pub fn prepare(
             }
         }
         Captured::Image { bytes, format } => {
-            let img = image::load_from_memory_with_format(&bytes, format).context("无法解码剪贴板图片")?;
-            let rgba = img.to_rgba8();
+            let rgba = decode_rgba(&bytes, Some(format)).context("无法解码剪贴板图片")?;
             let (w, h) = rgba.dimensions();
             // 按像素去重：同一张图以 PNG 或 BMP 格式出现时哈希一致
             let content_hash = hash(b"image", &[&w.to_le_bytes(), &h.to_le_bytes(), rgba.as_raw()]);
@@ -149,8 +148,7 @@ fn image_file_preview(path: &Path, images_dir: &Path, max_item_bytes: usize) -> 
         if fs::metadata(path)?.len() as usize > max_item_bytes {
             return Ok(None);
         }
-        let img = image::load_from_memory(&fs::read(path)?)?;
-        let rgba = img.to_rgba8();
+        let rgba = decode_rgba(&fs::read(path)?, None)?;
         let (w, h) = rgba.dimensions();
         let pixels = hash(b"image", &[&w.to_le_bytes(), &h.to_le_bytes(), rgba.as_raw()]);
         let img = DynamicImage::ImageRgba8(rgba);
@@ -162,6 +160,32 @@ fn image_file_preview(path: &Path, images_dir: &Path, max_item_bytes: usize) -> 
         log::debug!("图片文件无法生成预览: {e:#}");
         None
     })
+}
+
+/// 解码时的尺寸与内存上限。压缩后很小的图片也可能解码出数 GB 的像素，
+/// 必须在解码前限制，事后按 PNG 大小判断已来不及。
+const DECODE_MAX_SIDE: u32 = 16384;
+const DECODE_MAX_ALLOC: u64 = 256 * 1024 * 1024;
+
+/// 在尺寸与内存上限内解码为 RGBA；`format` 为空时按内容识别格式。
+fn decode_rgba(bytes: &[u8], format: Option<ImageFormat>) -> anyhow::Result<RgbaImage> {
+    let mut reader = ImageReader::new(Cursor::new(bytes));
+    match format {
+        Some(f) => reader.set_format(f),
+        None => reader = reader.with_guessed_format()?,
+    }
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(DECODE_MAX_SIDE);
+    limits.max_image_height = Some(DECODE_MAX_SIDE);
+    limits.max_alloc = Some(DECODE_MAX_ALLOC);
+    reader.limits(limits);
+    let decoder = reader.into_decoder()?;
+    // 只读了文件头：按最终 RGBA 每像素 4 字节估算，超限时不再解码
+    let (w, h) = decoder.dimensions();
+    if u64::from(w) * u64::from(h) * 4 > DECODE_MAX_ALLOC {
+        anyhow::bail!("图片尺寸过大 {w}×{h}");
+    }
+    Ok(DynamicImage::from_decoder(decoder)?.into_rgba8())
 }
 
 fn hash(tag: &[u8], parts: &[&[u8]]) -> String {
@@ -309,6 +333,29 @@ mod tests {
             let clip = prepare(Captured::Files(files), None, dir.path(), MAX).unwrap().unwrap();
             assert!(clip.thumb.is_none() && clip.image_file.is_none());
         }
+    }
+
+    #[test]
+    fn huge_image_is_rejected_before_decoding() {
+        // 12000×12000 的 BMP 文件头，像素数据缺失：若真的解码会先分配约 550 MB
+        let (w, h) = (12000i32, 12000i32);
+        let mut bmp = Vec::new();
+        bmp.extend_from_slice(b"BM");
+        bmp.extend_from_slice(&0u32.to_le_bytes());
+        bmp.extend_from_slice(&0u32.to_le_bytes());
+        bmp.extend_from_slice(&54u32.to_le_bytes());
+        bmp.extend_from_slice(&40u32.to_le_bytes());
+        bmp.extend_from_slice(&w.to_le_bytes());
+        bmp.extend_from_slice(&h.to_le_bytes());
+        bmp.extend_from_slice(&1u16.to_le_bytes());
+        bmp.extend_from_slice(&32u16.to_le_bytes());
+        bmp.extend_from_slice(&[0; 24]);
+        let err = decode_rgba(&bmp, Some(ImageFormat::Bmp)).unwrap_err();
+        assert!(err.to_string().contains("尺寸过大"), "{err:#}");
+
+        let dir = tempfile::tempdir().unwrap();
+        let big = Captured::Image { bytes: bmp, format: ImageFormat::Bmp };
+        assert!(prepare(big, None, dir.path(), usize::MAX).is_err());
     }
 
     #[test]
