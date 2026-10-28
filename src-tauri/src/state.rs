@@ -21,6 +21,10 @@ pub struct AppState {
     popup_generation: AtomicU64,
     /// 每次弹窗移动加一，用于判断拖动是否已结束。
     move_generation: AtomicU64,
+    /// 弹窗正在创建（WebView2 初始化期间主线程会嵌套处理消息，热键、托盘事件可能重入）。
+    popup_creating: AtomicBool,
+    /// 弹窗页面加载完成后需要显示。
+    popup_show_pending: AtomicBool,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -87,6 +91,24 @@ impl AppState {
     pub fn move_generation(&self) -> u64 {
         self.move_generation.load(Ordering::Acquire)
     }
+
+    /// 开始创建弹窗；已有创建在进行时返回 false。
+    pub fn begin_popup_creation(&self) -> bool {
+        !self.popup_creating.swap(true, Ordering::AcqRel)
+    }
+
+    pub fn end_popup_creation(&self) {
+        self.popup_creating.store(false, Ordering::Release);
+    }
+
+    pub fn request_popup_show(&self) {
+        self.popup_show_pending.store(true, Ordering::Release);
+    }
+
+    /// 取出并清除“加载完成后显示”的请求。
+    pub fn take_popup_show(&self) -> bool {
+        self.popup_show_pending.swap(false, Ordering::AcqRel)
+    }
 }
 
 #[cfg(test)]
@@ -110,6 +132,21 @@ mod tests {
         s.arm_permanent(Duration::ZERO);
         assert!(!s.permanent_armed());
         assert!(!s.take_permanent_armed());
+    }
+
+    #[test]
+    fn popup_creation_is_exclusive_and_show_request_consumed_once() {
+        let s = AppState::default();
+        assert!(s.begin_popup_creation());
+        assert!(!s.begin_popup_creation());
+        s.end_popup_creation();
+        assert!(s.begin_popup_creation());
+
+        assert!(!s.take_popup_show());
+        s.request_popup_show();
+        s.request_popup_show();
+        assert!(s.take_popup_show());
+        assert!(!s.take_popup_show());
     }
 
     #[test]

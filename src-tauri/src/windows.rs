@@ -1,10 +1,4 @@
-use std::{
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-    time::Duration,
-};
+use std::time::Duration;
 
 use tauri::{
     webview::PageLoadEvent, AppHandle, Manager, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
@@ -103,10 +97,18 @@ fn present(app: &AppHandle, popup: &WebviewWindow) {
 }
 
 /// 创建弹窗；`show` 为 true 时在页面首次加载完成后显示，避免先出现空白窗口。
+///
+/// 在主线程上创建 WebView2 时会嵌套处理消息，期间再次按下热键或点击托盘会重入到这里，
+/// 而同名窗口要等创建完成才登记，重复创建会留下游离的弹窗。所以创建进行中只记下显示请求。
 fn create_popup(app: &AppHandle, show: bool) {
+    let state = app.state::<AppState>();
+    if show {
+        state.request_popup_show();
+    }
+    if !state.begin_popup_creation() {
+        return;
+    }
     let handle = app.clone();
-    // 只处理首次加载完成；开发模式热更新会再次触发加载事件
-    let shown = Arc::new(AtomicBool::new(!show));
     let built = WebviewWindowBuilder::new(app, POPUP, WebviewUrl::App("popup.html".into()))
         .title("AnyPaste")
         .inner_size(POPUP_SIZE.0, POPUP_SIZE.1)
@@ -116,12 +118,14 @@ fn create_popup(app: &AppHandle, show: bool) {
         .skip_taskbar(true)
         .always_on_top(true)
         .shadow(true)
+        // 只响应创建期间的显示请求；开发模式热更新会再次触发加载事件，此时请求已被取走
         .on_page_load(move |popup, payload| {
-            if payload.event() == PageLoadEvent::Finished && !shown.swap(true, Ordering::Relaxed) {
+            if payload.event() == PageLoadEvent::Finished && handle.state::<AppState>().take_popup_show() {
                 present(&handle, &popup);
             }
         })
         .build();
+    state.end_popup_creation();
     match built {
         Ok(popup) => {
             let handle = app.clone();
@@ -153,7 +157,11 @@ fn create_popup(app: &AppHandle, show: bool) {
                 _ => {}
             });
         }
-        Err(e) => log::error!("创建弹出列表失败: {e}"),
+        Err(e) => {
+            // 不留下显示请求，否则下次后台预创建会意外弹出
+            state.take_popup_show();
+            log::error!("创建弹出列表失败: {e}");
+        }
     }
 }
 
