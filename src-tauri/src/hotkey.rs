@@ -21,16 +21,16 @@ pub enum Action {
     PermanentCopy,
 }
 
-/// 已注册的快捷键 ID 到动作的映射。
+/// 已注册的快捷键 ID 到快捷键与动作的映射。
 #[derive(Default)]
 pub struct Hotkeys {
-    bindings: Mutex<HashMap<u32, Action>>,
+    bindings: Mutex<HashMap<u32, (Shortcut, Action)>>,
     /// Win+V 是否已成功注册（需注册表让出且资源管理器已重启）。
     win_v_active: AtomicBool,
 }
 
 impl Hotkeys {
-    fn bindings(&self) -> std::sync::MutexGuard<'_, HashMap<u32, Action>> {
+    fn bindings(&self) -> std::sync::MutexGuard<'_, HashMap<u32, (Shortcut, Action)>> {
         self.bindings.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -45,7 +45,7 @@ pub fn plugin() -> TauriPlugin<Wry> {
             if event.state != ShortcutState::Pressed {
                 return;
             }
-            let action = app.state::<Hotkeys>().bindings().get(&shortcut.id()).copied();
+            let action = app.state::<Hotkeys>().bindings().get(&shortcut.id()).map(|(_, a)| *a);
             match action {
                 #[cfg(windows)]
                 Some(Action::OpenPopup) => crate::windows::toggle_popup(app),
@@ -79,18 +79,25 @@ pub fn apply(app: &AppHandle, settings: &Settings) -> anyhow::Result<()> {
 }
 
 /// 暂停全部热键（录制新热键时使用，否则按下已注册的组合会被系统拦截）。
+/// 不能用插件的 `unregister_all`：它持有插件内部锁等待主线程执行注销，而主线程分发热键事件时
+/// 也要取这把锁；设置窗口在后台线程调用时恰好按下热键，两边互相等待，主线程卡死，托盘与热键全部失灵。
+/// `unregister_multiple` 在主线程执行完毕后才取锁，没有这个问题。
 pub fn suspend(app: &AppHandle) {
-    if let Err(e) = app.global_shortcut().unregister_all() {
+    let hotkeys = app.state::<Hotkeys>();
+    let registered: Vec<Shortcut> = hotkeys.bindings().drain().map(|(_, (s, _))| s).collect();
+    hotkeys.win_v_active.store(false, Ordering::Relaxed);
+    if registered.is_empty() {
+        return;
+    }
+    if let Err(e) = app.global_shortcut().unregister_multiple(registered) {
         log::warn!("注销热键失败: {e}");
     }
-    app.state::<Hotkeys>().bindings().clear();
-    app.state::<Hotkeys>().win_v_active.store(false, Ordering::Relaxed);
 }
 
 fn bind(app: &AppHandle, action: Action, accel: &str) -> anyhow::Result<()> {
     let shortcut: Shortcut = accel.parse()?;
     app.global_shortcut().register(shortcut)?;
-    app.state::<Hotkeys>().bindings().insert(shortcut.id(), action);
+    app.state::<Hotkeys>().bindings().insert(shortcut.id(), (shortcut, action));
     Ok(())
 }
 
