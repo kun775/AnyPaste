@@ -148,9 +148,9 @@ export function installMock(window: "popup" | "settings") {
         case "is_paused":
           return false;
         case "paste_clip":
+          return { pasted: false };
         case "copy_clip":
-          items = items.map((i) => (i.id === id ? { ...i, lastCopiedAt: Date.now() } : i));
-          return cmd === "paste_clip" ? { pasted: false } : null;
+          return null;
         case "set_permanent":
           items = items.map((i) =>
             i.id === id

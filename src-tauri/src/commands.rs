@@ -100,17 +100,13 @@ pub async fn copy_clip(app: AppHandle, id: i64) -> CmdResult<()> {
         .map_err(err)
 }
 
-/// 写回剪贴板后置顶该条目；写入带有 AnyPaste 标记，监听器不会重复记录。
+/// 写回剪贴板；写入带有 AnyPaste 标记，监听器不会重复记录，条目在列表中的位置保持不变。
 fn copy_to_clipboard(app: &AppHandle, id: i64, plain: bool) -> anyhow::Result<()> {
-    let store = app.state::<Store>();
-    let content = store.clip_content(id)?.context("条目不存在或已删除")?;
+    let content = app.state::<Store>().clip_content(id)?.context("条目不存在或已删除")?;
     #[cfg(windows)]
     crate::clipboard::write(content, plain, &app.state::<AppPaths>().images_dir)?;
     #[cfg(not(windows))]
     let _ = (content, plain);
-    let ttl = app.state::<SettingsState>().get().capture().ttl_ms;
-    store.touch(id, now_ms(), ttl)?;
-    events::clips_changed(app);
     Ok(())
 }
 

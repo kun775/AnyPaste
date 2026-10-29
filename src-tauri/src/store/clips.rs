@@ -171,17 +171,6 @@ impl Store {
         }
     }
 
-    /// 从列表中粘贴或复制后置顶，并重新开始计算过期时间。返回条目是否存在。
-    pub fn touch(&self, id: i64, now: i64, ttl_ms: i64) -> rusqlite::Result<bool> {
-        let n = self.conn().execute(
-            "UPDATE clips SET last_copied_at = ?2, updated_at = ?2,
-               expires_at = CASE WHEN is_permanent = 1 THEN NULL ELSE ?3 END
-             WHERE id = ?1 AND deleted_at IS NULL",
-            params![id, now, now.saturating_add(ttl_ms)],
-        )?;
-        Ok(n > 0)
-    }
-
     /// 设为永久（不再过期），或转为临时（从现在起重新计时）。返回条目是否存在。
     pub fn set_permanent(&self, id: i64, permanent: bool, now: i64, ttl_ms: i64) -> rusqlite::Result<bool> {
         let expires = (!permanent).then(|| now.saturating_add(ttl_ms));
@@ -416,15 +405,6 @@ pub(crate) mod tests {
         assert_eq!(got.text.as_deref(), Some("hi"));
         assert_eq!(got.html.as_deref(), Some("<b>hi</b>"));
         assert!(store.clip_content(id + 100).unwrap().is_none());
-    }
-
-    #[test]
-    fn touch_bumps_and_restarts_ttl() {
-        let store = Store::open_in_memory().unwrap();
-        let id = store.upsert_clip(&text_clip("a"), 0, TTL).unwrap().id;
-        assert!(store.touch(id, 700, TTL).unwrap());
-        assert_eq!(row(&store, id), ("text".into(), 0, 700, Some(1700), None));
-        assert!(!store.touch(id + 1, 700, TTL).unwrap());
     }
 
     #[test]

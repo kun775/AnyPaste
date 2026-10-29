@@ -162,11 +162,7 @@
     if (!item) return;
     try {
       const { pasted } = await pasteClip(item.id, plainDefault !== alternate);
-      if (!pasted) {
-        showToast("已复制到剪贴板");
-        sel = 0;
-        await reload();
-      }
+      if (!pasted) showToast("已复制到剪贴板");
     } catch (e) {
       showToast(String(e), true);
     }

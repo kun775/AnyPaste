@@ -487,9 +487,9 @@ mod tests {
         a.sync(&op, None, 100).await.unwrap();
         b.sync(&op, None, 100).await.unwrap();
 
-        // 两台设备分别使用（置顶）了该条目，B 更晚
-        a.store.touch(a.id_of("shared"), 500, TTL).unwrap();
-        b.store.touch(b.id_of("shared"), 600, TTL).unwrap();
+        // 两台设备分别再次复制了该内容，B 更晚
+        perm(&a.store, "shared", 500);
+        perm(&b.store, "shared", 600);
         a.sync(&op, None, 700).await.unwrap();
         b.sync(&op, None, 700).await.unwrap();
         a.sync(&op, None, 700).await.unwrap();
