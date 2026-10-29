@@ -40,6 +40,8 @@ const THUMB =
       '<stop offset="0" stop-color="#5b8def"/><stop offset=".55" stop-color="#9b6cf0"/><stop offset="1" stop-color="#f08bb4"/>' +
       '</linearGradient></defs><rect width="320" height="180" fill="url(#g)"/><circle cx="230" cy="150" r="70" fill="#fff" opacity=".25"/></svg>',
   );
+// 原图与示例条目标注的 1280×720 一致，便于调试原始尺寸预览
+const FULL = THUMB.replace(encodeURIComponent('width="320" height="180"'), encodeURIComponent('width="1280" height="720" viewBox="0 0 320 180"'));
 
 function fixtures(): ClipItem[] {
   const now = Date.now();
@@ -162,7 +164,7 @@ export function installMock(window: "popup" | "settings") {
           items = items.map((i) => (i.id === id ? { ...i, pinned: args.pinned as boolean } : i));
           return null;
         case "clip_image":
-          return items.find((i) => i.id === id)?.thumb ?? THUMB;
+          return FULL;
         case "delete_clip":
           items = items.filter((i) => i.id !== id);
           return null;
