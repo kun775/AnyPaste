@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { ClipItem } from "../lib/api";
-  import { ago, fileNames, formatSize, isUrl, remaining } from "../lib/format";
+  import { ago, excerpt, fileNames, formatSize, highlight, isUrl, parseColor, remaining } from "../lib/format";
   import { icons } from "../lib/icons";
 
   interface Props {
@@ -8,6 +8,8 @@
     index: number;
     selected: boolean;
     now: number;
+    /** 当前搜索词，用于高亮命中部分。 */
+    query: string;
     onselect: () => void;
     onpaste: () => void;
     ontoggle: () => void;
@@ -17,12 +19,19 @@
     onmenu: (x: number, y: number) => void;
   }
 
-  let { item, index, selected, now, onselect, onpaste, ontoggle, onpin, onpreview, ondelete, onmenu }: Props =
+  let { item, index, selected, now, query, onselect, onpaste, ontoggle, onpin, onpreview, ondelete, onmenu }: Props =
     $props();
 
-  const link = $derived(item.kind === "text" && isUrl(item.preview));
+  const textual = $derived(item.kind === "text" || item.kind === "rich");
+  const link = $derived(textual && isUrl(item.preview));
+  const color = $derived(textual ? parseColor(item.preview) : null);
   const icon = $derived(link ? icons.link : icons[item.kind]);
   const files = $derived(item.kind === "files" ? fileNames(item.preview) : []);
+  // 文件条目显示文件名，其余显示文本；命中位置靠后时从命中处附近截取
+  const shown = $derived(
+    item.kind === "files" ? `${files.length} 个文件：${files.join("、")}` : excerpt(item.preview, query),
+  );
+  const segments = $derived(highlight(shown, query));
   // 剩余比例用于过期进度条；临时条目的总时长为复制时间到过期时间
   const ttl = $derived.by(() => {
     if (item.permanent || item.expiresAt === null) return null;
@@ -59,15 +68,18 @@
     onmenu(e.clientX, e.clientY);
   }}
 >
-  <div class="kind">{@html icon}</div>
+  {#if color}
+    <div class="kind swatch" title="颜色 {color}"><i style="background: {color}"></i></div>
+  {:else}
+    <div class="kind">{@html icon}</div>
+  {/if}
   <div class="body">
     {#if item.kind === "image" && item.thumb}
       <img class="thumb" src={item.thumb} alt="图片 {item.preview}" />
-    {:else if item.kind === "files"}
-      {#if item.thumb}<img class="thumb" src={item.thumb} alt="图片文件 {files[0]}" />{/if}
-      <div class="preview">{files.length} 个文件：{files.join("、")}</div>
     {:else}
-      <div class="preview" class:link>{item.preview}</div>
+      {#if item.kind === "files" && item.thumb}<img class="thumb" src={item.thumb} alt="图片文件 {files[0]}" />{/if}
+      <!-- prettier-ignore -->
+      <div class="preview" class:link>{#each segments as seg}{#if seg.hit}<mark>{seg.text}</mark>{:else}{seg.text}{/if}{/each}</div>
     {/if}
     <div class="meta">
       {#if item.pinned}<span class="pin-mark" title="已置顶">{@html icons.pinFill}</span>{/if}
@@ -87,9 +99,9 @@
   </div>
   {#if index < 9}<span class="num">{index + 1}</span>{/if}
   <div class="actions">
-    {#if item.thumb}
-      <button class="act" title="预览原图" onclick={stop(onpreview)}>{@html icons.eye}</button>
-    {/if}
+    <button class="act" title={item.thumb ? "预览原图（空格）" : "查看全文（空格）"} onclick={stop(onpreview)}>
+      {@html icons.eye}
+    </button>
     <button class="act pin" class:on={item.pinned} title={item.pinned ? "取消置顶" : "置顶"} onclick={stop(onpin)}>
       {@html item.pinned ? icons.pinFill : icons.pin}
     </button>
@@ -138,6 +150,25 @@
   .perm .kind {
     background: var(--perm-soft);
     color: var(--perm);
+  }
+  /* 色块：棋盘格衬底，便于看出半透明颜色 */
+  .kind.swatch,
+  .perm .kind.swatch {
+    display: block;
+    overflow: hidden;
+    border: 1px solid var(--line-strong);
+    background: repeating-conic-gradient(var(--line-strong) 0 25%, transparent 0 50%) 0 0 / 8px 8px;
+  }
+  .swatch i {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+  .preview mark {
+    padding: 0 1px;
+    border-radius: 2px;
+    background: var(--mark);
+    color: inherit;
   }
   .body {
     min-width: 0;

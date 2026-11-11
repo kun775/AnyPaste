@@ -13,7 +13,7 @@ use anyhow::{bail, Context};
 use rusqlite::Connection;
 
 pub use clips::{ClipContent, ClipKind, NewClip};
-pub use list::{ClipItem, Counts, Cursor};
+pub use list::{ClipItem, Counts, Cursor, KindFilter};
 pub use sync::{ClipRecord, Fingerprint, LocalState};
 #[cfg(test)]
 pub(crate) use sync::tests as sync_tests;

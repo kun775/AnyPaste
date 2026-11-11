@@ -21,6 +21,34 @@ pub struct Cursor {
     pub id: i64,
 }
 
+/// 列表的内容类型筛选。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KindFilter {
+    /// 纯文本与富文本（含链接）。
+    Text,
+    /// 整段内容是一个 http(s) 网址的文本。
+    Link,
+    Image,
+    Files,
+}
+
+impl KindFilter {
+    fn condition(self) -> &'static str {
+        match self {
+            Self::Text => "kind IN ('text', 'rich')",
+            // 与前端 isUrl 的判定一致：去掉首尾空白后以 http(s):// 开头且不含空白
+            Self::Link => {
+                "kind IN ('text', 'rich')
+                 AND (trim(text, char(9, 10, 13, 32)) LIKE 'http://%' OR trim(text, char(9, 10, 13, 32)) LIKE 'https://%')
+                 AND trim(text, char(9, 10, 13, 32)) NOT GLOB '*[' || char(9, 10, 13, 32) || ']*'"
+            }
+            Self::Image => "kind = 'image'",
+            Self::Files => "kind = 'files'",
+        }
+    }
+}
+
 /// 弹出列表中的一行。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -60,8 +88,27 @@ fn visible(now: &str) -> String {
 }
 
 impl Store {
-    /// 列出一页条目；`search` 为空时不过滤。第一页（`before` 为空）先返回全部置顶条目
+    /// 列出一页条目；`filter`、`search` 为空时不过滤。第一页（`before` 为空）先返回全部置顶条目
     /// （按置顶时间倒序），再接按最近复制时间倒序的普通条目；后续页只含普通条目。
+    pub fn list_clips_filtered(
+        &self,
+        permanent: bool,
+        filter: Option<KindFilter>,
+        search: Option<&str>,
+        before: Option<Cursor>,
+        now: i64,
+    ) -> rusqlite::Result<Vec<ClipItem>> {
+        let mut items = if before.is_none() {
+            self.query_items(permanent, filter, search, None, now, true)?
+        } else {
+            Vec::new()
+        };
+        items.extend(self.query_items(permanent, filter, search, before, now, false)?);
+        Ok(items)
+    }
+
+    /// 不带类型筛选的列表，供测试使用。
+    #[cfg(test)]
     pub fn list_clips(
         &self,
         permanent: bool,
@@ -69,18 +116,13 @@ impl Store {
         before: Option<Cursor>,
         now: i64,
     ) -> rusqlite::Result<Vec<ClipItem>> {
-        let mut items = if before.is_none() {
-            self.query_items(permanent, search, None, now, true)?
-        } else {
-            Vec::new()
-        };
-        items.extend(self.query_items(permanent, search, before, now, false)?);
-        Ok(items)
+        self.list_clips_filtered(permanent, None, search, before, now)
     }
 
     fn query_items(
         &self,
         permanent: bool,
+        filter: Option<KindFilter>,
         search: Option<&str>,
         before: Option<Cursor>,
         now: i64,
@@ -101,6 +143,10 @@ impl Store {
             sql.push_str(" AND (last_copied_at < ?3 OR (last_copied_at = ?3 AND id < ?4))");
             args.push(c.last_copied_at.into());
             args.push(c.id.into());
+        }
+
+        if let Some(f) = filter {
+            sql.push_str(&format!(" AND ({})", f.condition()));
         }
 
         let search = search.map(str::trim).filter(|s| !s.is_empty());
@@ -277,6 +323,30 @@ mod tests {
 
     fn ids_of(items: &[ClipItem]) -> Vec<i64> {
         items.iter().map(|i| i.id).collect()
+    }
+
+    #[test]
+    fn filters_by_kind() {
+        let store = Store::open_in_memory().unwrap();
+        let id = seed(&store, &["plain note", " https://example.com/a?b=1\n", "see https://example.com", "HTTP://X.IO"]);
+        let mut image = text_clip("640×480");
+        image.kind = crate::store::ClipKind::Image;
+        let img = store.upsert_clip(&image, 100, TTL).unwrap().id;
+        let mut files = text_clip("C:\\a.txt");
+        files.kind = crate::store::ClipKind::Files;
+        let file = store.upsert_clip(&files, 110, TTL).unwrap().id;
+
+        let list = |f: KindFilter, q: Option<&str>| ids(&store.list_clips_filtered(false, Some(f), q, None, 0).unwrap());
+        assert_eq!(list(KindFilter::Text, None), vec![id[3], id[2], id[1], id[0]]);
+        // 首尾空白不影响判定；网址只是内容的一部分时不算链接
+        assert_eq!(list(KindFilter::Link, None), vec![id[3], id[1]]);
+        assert_eq!(list(KindFilter::Image, None), vec![img]);
+        assert_eq!(list(KindFilter::Files, None), vec![file]);
+        // 筛选与搜索、置顶可以叠加
+        assert_eq!(list(KindFilter::Link, Some("example")), vec![id[1]]);
+        store.set_pinned(id[0], true, 5).unwrap();
+        assert_eq!(list(KindFilter::Text, None)[0], id[0]);
+        assert_eq!(list(KindFilter::Image, None), vec![img]);
     }
 
     #[test]

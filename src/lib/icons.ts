@@ -35,5 +35,9 @@ export const icons = {
     '<path d="M10 2.5l3.5 3.5-2.5 1-2 2 .5 3-1 1-2.5-2.5-2.5-2.5 1-1 3 .5 2-2z" fill="currentColor"/><path d="M6 10L3 13"/>',
   ),
   eye: svg(14, '<path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/>'),
+  all: svg(
+    16,
+    '<rect x="2.5" y="2.5" width="4.5" height="4.5" rx="1"/><rect x="9" y="2.5" width="4.5" height="4.5" rx="1"/><rect x="2.5" y="9" width="4.5" height="4.5" rx="1"/><rect x="9" y="9" width="4.5" height="4.5" rx="1"/>',
+  ),
   grip: svg(16, '<path d="M5 6.5h6M5 9.5h6"/>'),
 };

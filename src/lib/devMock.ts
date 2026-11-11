@@ -2,7 +2,7 @@
 // 仅在 `import.meta.env.DEV` 下被动态导入，不会进入生产包。
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
-import type { ClipItem, Cursor, Settings, SyncConfig, SyncStatus, Tab, UpdateStatus } from "./api";
+import type { ClipItem, Cursor, KindFilter, Settings, SyncConfig, SyncStatus, Tab, UpdateStatus } from "./api";
 
 const DEFAULT_SETTINGS: Settings = {
   closeToTray: true,
@@ -43,6 +43,22 @@ const THUMB =
 // 原图与示例条目标注的 1280×720 一致，便于调试原始尺寸预览
 const FULL = THUMB.replace(encodeURIComponent('width="320" height="180"'), encodeURIComponent('width="1280" height="720" viewBox="0 0 320 180"'));
 
+// 长文本示例：列表只含前 400 个字符，全文由 clip_text 返回
+const LONG_TEXT = Array.from(
+  { length: 40 },
+  (_, i) => `第 ${i + 1} 段：剪贴板历史会保留完整内容，列表中只显示开头两行，按空格可以查看全文并确认后再粘贴。`,
+).join("\n");
+
+const isLink = (text: string) => /^https?:\/\/\S+$/i.test(text.trim());
+
+function matchesKind(item: ClipItem, kind: KindFilter | null): boolean {
+  if (!kind) return true;
+  const textual = item.kind === "text" || item.kind === "rich";
+  if (kind === "text") return textual;
+  if (kind === "link") return textual && isLink(item.preview);
+  return item.kind === kind;
+}
+
 function fixtures(): ClipItem[] {
   const now = Date.now();
   let id = 0;
@@ -73,6 +89,9 @@ function fixtures(): ClipItem[] {
       thumb: THUMB,
     }),
     make("text", "顺丰 SF1402938475612", "msedge.exe", 23 * HOUR + 20 * MIN),
+    make("text", "#4CC2FF", "Figma.exe", 20 * MIN),
+    make("text", "rgba(194, 124, 0, 0.5)", "Code.exe", 25 * MIN),
+    make("text", LONG_TEXT.slice(0, 400), "Code.exe", 30 * MIN, { sizeBytes: LONG_TEXT.length }),
     make("text", "huang@example.com", "Outlook.exe", 5 * 24 * HOUR, { permanent: true, expiresAt: null }),
     make("text", "git log --oneline --graph --decorate -20", "WindowsTerminal.exe", 2 * 24 * HOUR, {
       permanent: true,
@@ -135,7 +154,8 @@ export function installMock(window: "popup" | "settings") {
       switch (cmd) {
         case "list_clips": {
           const before = args.before as Cursor | null;
-          const all = visible(args.tab as Tab, args.query as string | null);
+          const kind = (args.kind ?? null) as KindFilter | null;
+          const all = visible(args.tab as Tab, args.query as string | null).filter((i) => matchesKind(i, kind));
           const pinned = before ? [] : all.filter((i) => i.pinned);
           let list = all.filter((i) => !i.pinned);
           if (before) {
@@ -165,6 +185,11 @@ export function installMock(window: "popup" | "settings") {
           return null;
         case "clip_image":
           return FULL;
+        case "clip_text": {
+          const preview = items.find((i) => i.id === id)?.preview ?? "";
+          const text = LONG_TEXT.startsWith(preview) && preview.length === 400 ? LONG_TEXT : preview;
+          return { text, chars: [...text].length, truncated: false };
+        }
         case "delete_clip":
           items = items.filter((i) => i.id !== id);
           return null;

@@ -10,7 +10,7 @@ use crate::{
     prefs,
     settings::{Settings, SettingsState},
     state::AppState,
-    store::{now_ms, ClipItem, Counts, Cursor, Store},
+    store::{now_ms, ClipItem, Counts, Cursor, KindFilter, Store},
     sync::{self, SecretsInput, SyncConfig, SyncService, SyncStatus},
     updater::{self, UpdateInfo, UpdateService, UpdateStatus},
     windows,
@@ -51,11 +51,12 @@ pub fn is_paused(state: State<'_, AppState>) -> bool {
 pub async fn list_clips(
     store: State<'_, Store>,
     tab: Tab,
+    kind: Option<KindFilter>,
     query: Option<String>,
     before: Option<Cursor>,
 ) -> CmdResult<Vec<ClipItem>> {
     store
-        .list_clips(matches!(tab, Tab::Perm), query.as_deref(), before, now_ms())
+        .list_clips_filtered(matches!(tab, Tab::Perm), kind, query.as_deref(), before, now_ms())
         .map_err(err)
 }
 
@@ -144,6 +145,34 @@ pub async fn clip_image(store: State<'_, Store>, paths: State<'_, AppPaths>, id:
         "data:image/png;base64,{}",
         base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)
     ))
+}
+
+/// 全文预览最多返回的字符数，避免超长文本拖慢 IPC 和渲染。
+const TEXT_PREVIEW_CHARS: usize = 200_000;
+
+/// 条目的完整文本，用于全文预览；文件条目为换行分隔的路径。
+#[derive(Serialize)]
+pub struct ClipText {
+    text: String,
+    /// 文本的总字符数。
+    chars: usize,
+    /// 超出上限，`text` 只含开头部分。
+    truncated: bool,
+}
+
+fn clip_text_of(mut text: String) -> ClipText {
+    let chars = text.chars().count();
+    let truncated = chars > TEXT_PREVIEW_CHARS;
+    if let Some((end, _)) = text.char_indices().nth(TEXT_PREVIEW_CHARS) {
+        text.truncate(end);
+    }
+    ClipText { text, chars, truncated }
+}
+
+#[tauri::command]
+pub async fn clip_text(store: State<'_, Store>, id: i64) -> CmdResult<ClipText> {
+    let content = store.clip_content(id).map_err(err)?.ok_or("条目不存在或已删除")?;
+    Ok(clip_text_of(content.text.unwrap_or_default()))
 }
 
 #[tauri::command]
@@ -365,5 +394,21 @@ pub fn app_info(app: AppHandle, paths: State<'_, AppPaths>) -> AppInfo {
         log_dir: paths.log_dir.display().to_string(),
         repo_url: updater::REPO_URL,
         portable: paths.portable,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clip_text_truncates_on_char_boundary() {
+        let short = clip_text_of("你好".into());
+        assert_eq!((short.text.as_str(), short.chars, short.truncated), ("你好", 2, false));
+
+        let long = clip_text_of("字".repeat(TEXT_PREVIEW_CHARS + 3));
+        assert_eq!(long.chars, TEXT_PREVIEW_CHARS + 3);
+        assert!(long.truncated);
+        assert_eq!(long.text.chars().count(), TEXT_PREVIEW_CHARS);
     }
 }

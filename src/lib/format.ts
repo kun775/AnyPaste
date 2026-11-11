@@ -31,6 +31,46 @@ export function isUrl(text: string): boolean {
   return /^https?:\/\/\S+$/i.test(text.trim());
 }
 
+export interface Segment {
+  text: string;
+  hit: boolean;
+}
+
+/** 把文本按搜索词（不区分大小写）切分成片段，用于高亮命中部分。 */
+export function highlight(text: string, query: string): Segment[] {
+  const q = query.trim();
+  if (!q || !text) return [{ text, hit: false }];
+  const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+  const out: Segment[] = [];
+  let last = 0;
+  for (const m of text.matchAll(re)) {
+    if (m.index > last) out.push({ text: text.slice(last, m.index), hit: false });
+    out.push({ text: m[0], hit: true });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push({ text: text.slice(last), hit: false });
+  return out;
+}
+
+/** 命中位置靠后时从命中处附近截取，保证两行预览内能看到搜索词。 */
+export function excerpt(text: string, query: string, lead = 24, threshold = 48): string {
+  const q = query.trim().toLowerCase();
+  if (!q) return text;
+  const at = text.toLowerCase().indexOf(q);
+  if (at < threshold) return text;
+  return "…" + text.slice(at - lead).trimStart();
+}
+
+/** 文本是单个 CSS 颜色值（十六进制或 rgb/hsl 函数）时返回该颜色，用于显示色块。 */
+export function parseColor(text: string): string | null {
+  const t = text.trim();
+  if (t.length > 48) return null;
+  const hex = /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(t);
+  const fn = /^(?:rgb|hsl)a?\([^()]+\)$/i.test(t);
+  if (!hex && !fn) return null;
+  return typeof CSS !== "undefined" && CSS.supports("color", t) ? t : null;
+}
+
 export function fileNames(text: string): string[] {
   return text
     .split("\n")

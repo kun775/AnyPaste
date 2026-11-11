@@ -19,6 +19,7 @@
     setPinned,
     type ClipItem,
     type Counts,
+    type KindFilter,
     type Settings,
     type Tab,
   } from "../lib/api";
@@ -28,6 +29,16 @@
   import ClipRow from "./ClipRow.svelte";
   import ContextMenu, { type MenuEntry } from "./ContextMenu.svelte";
   import ImagePreview from "./ImagePreview.svelte";
+  import TextPreview from "./TextPreview.svelte";
+
+  /** 类型筛选项，顺序即 Ctrl+F 的切换顺序。 */
+  const FILTERS: { value: KindFilter | null; label: string; icon: string }[] = [
+    { value: null, label: "全部", icon: icons.all },
+    { value: "text", label: "文本", icon: icons.text },
+    { value: "link", label: "链接", icon: icons.link },
+    { value: "image", label: "图片", icon: icons.image },
+    { value: "files", label: "文件", icon: icons.files },
+  ];
 
   interface Confirm {
     title: string;
@@ -37,6 +48,7 @@
   }
 
   let tab = $state<Tab>("temp");
+  let filter = $state<KindFilter | null>(null);
   let query = $state("");
   let items = $state<ClipItem[]>([]);
   let counts = $state<Counts>({ temp: 0, perm: 0 });
@@ -62,7 +74,7 @@
   async function reload() {
     const seq = ++requestSeq;
     try {
-      const [list, c, p] = await Promise.all([listClips(tab, query, null), clipCounts(), isPaused()]);
+      const [list, c, p] = await Promise.all([listClips(tab, filter, query, null), clipCounts(), isPaused()]);
       if (seq !== requestSeq) return;
       items = list;
       counts = c;
@@ -85,7 +97,7 @@
     if (!last) return;
     loadingMore = true;
     try {
-      const more = await listClips(tab, query, { lastCopiedAt: last.lastCopiedAt, id: last.id });
+      const more = await listClips(tab, filter, query, { lastCopiedAt: last.lastCopiedAt, id: last.id });
       if (seq !== requestSeq) return;
       items = [...items, ...more];
       hasMore = more.length === PAGE_SIZE;
@@ -101,9 +113,10 @@
     if (listEl.scrollTop + listEl.clientHeight >= listEl.scrollHeight - 200) loadMore();
   }
 
-  // 切换 Tab 或输入搜索词时重新加载；输入时稍作防抖
+  // 切换 Tab、筛选或输入搜索词时重新加载；输入时稍作防抖
   $effect(() => {
     void tab;
+    void filter;
     const q = query;
     const timer = setTimeout(reload, q ? 120 : 0);
     return () => clearTimeout(timer);
@@ -127,6 +140,7 @@
         confirm = null;
         preview = null;
         query = "";
+        filter = null;
         sel = 0;
         now = Date.now();
         listEl?.scrollTo({ top: 0 });
@@ -139,6 +153,8 @@
       unlisten.forEach((p) => p.then((off) => off()));
     };
   });
+
+  const filterLabel = $derived(filter ? (FILTERS.find((f) => f.value === filter)?.label ?? "") : "");
 
   function showToast(text: string, error = false) {
     toast = { text, error };
@@ -212,9 +228,12 @@
     const entries: MenuEntry[] = [
       { label: "粘贴", icon: icons.paste, shortcut: "Enter", run: () => paste(item) },
     ];
-    if (item.thumb) {
-      entries.push({ label: "预览原图", icon: icons.eye, run: () => (preview = item) });
-    }
+    entries.push({
+      label: isImage(item) ? "预览原图" : "查看全文",
+      icon: icons.eye,
+      shortcut: "Space",
+      run: () => (preview = item),
+    });
     if (item.rich || item.kind === "files") {
       const label = plainDefault ? "保留格式粘贴" : "以纯文本粘贴";
       entries.push({ label, icon: icons.plain, shortcut: "Shift+Enter", run: () => paste(item, true) });
@@ -251,13 +270,31 @@
     listEl?.scrollTo({ top: 0 });
   }
 
+  function setFilter(next: KindFilter | null) {
+    if (filter === next) return;
+    filter = next;
+    sel = 0;
+    listEl?.scrollTo({ top: 0 });
+  }
+
+  function cycleFilter(step: number) {
+    const i = FILTERS.findIndex((f) => f.value === filter);
+    setFilter(FILTERS[(i + step + FILTERS.length) % FILTERS.length].value);
+  }
+
+  /** 图片条目与带缩略图的图片文件用图片预览，其余用全文预览。 */
+  function isImage(item: ClipItem) {
+    return item.kind === "image" || item.thumb !== null;
+  }
+
   function onKeydown(e: KeyboardEvent) {
     // 输入法组字期间的按键（如回车上屏、Esc 取消候选）交给输入法处理
     if (e.isComposing || e.keyCode === 229) return;
     if (preview) {
-      if (e.key === "Escape") {
+      if (e.key === "Escape" || e.key === " ") {
         e.preventDefault();
         preview = null;
+        searchEl?.focus();
       } else if (e.key === "Enter") {
         e.preventDefault();
         const item = preview;
@@ -297,6 +334,13 @@
       e.preventDefault();
       if (query) query = "";
       else hidePopup();
+    } else if (e.key === " " && !query) {
+      // 搜索框为空时空格用于预览；已有搜索词时空格正常输入
+      e.preventDefault();
+      if (item) preview = item;
+    } else if (ctrl && e.key.toLowerCase() === "f") {
+      e.preventDefault();
+      cycleFilter(e.shiftKey ? -1 : 1);
     } else if (ctrl && e.key.toLowerCase() === "p") {
       e.preventDefault();
       toggle(item);
@@ -339,8 +383,22 @@
     <button class="tab" class:active={tab === "perm"} role="tab" aria-selected={tab === "perm"} onclick={() => switchTab("perm")}>
       永久 <span class="count">{counts.perm}</span>
     </button>
+    <div class="filters" role="group" aria-label="按类型筛选">
+      {#each FILTERS as f (f.label)}
+        <button
+          class="filter"
+          class:active={filter === f.value}
+          aria-pressed={filter === f.value}
+          aria-label={f.label}
+          title="{f.label}（Ctrl+F 切换）"
+          onclick={() => setFilter(f.value)}
+        >
+          {@html f.icon}
+        </button>
+      {/each}
+    </div>
     {#if tab === "temp" && counts.temp > 0}
-      <button class="clear" onclick={askClearTemp}>清空临时</button>
+      <button class="clear" title="清空临时记录" aria-label="清空临时记录" onclick={askClearTemp}>{@html icons.trash}</button>
     {/if}
   </div>
 
@@ -352,6 +410,7 @@
           index={i}
           selected={i === sel}
           {now}
+          {query}
           onselect={() => (sel = i)}
           onpaste={() => paste(item)}
           ontoggle={() => toggle(item)}
@@ -372,7 +431,14 @@
         <p>正在加载…</p>
       {:else if query.trim()}
         <h3>没有匹配的记录</h3>
-        <p>没有找到包含“{query.trim()}”的{tab === "perm" ? "永久" : "临时"}条目</p>
+        <p>
+          没有找到包含“{query.trim()}”的{tab === "perm" ? "永久" : "临时"}{filterLabel}条目
+        </p>
+        {#if filter}<button class="link-btn" onclick={() => setFilter(null)}>在全部类型中搜索</button>{/if}
+      {:else if filter}
+        <h3>没有{filterLabel}条目</h3>
+        <p>{tab === "perm" ? "永久" : "临时"}列表中还没有这种类型的内容</p>
+        <button class="link-btn" onclick={() => setFilter(null)}>显示全部类型</button>
       {:else if tab === "perm"}
         <h3>还没有永久条目</h3>
         <p>用 <kbd>Ctrl+Shift+C</kbd> 复制，或在临时列表中<br />点击 ☆ 把条目设为永久</p>
@@ -389,21 +455,26 @@
   <footer class="foot">
     <span><kbd>↑↓</kbd> 选择</span>
     <span><kbd>Enter</kbd> 粘贴</span>
+    <span><kbd>Space</kbd> 预览</span>
     <span><kbd>Ctrl+P</kbd> 永久</span>
-    <span><kbd>Ctrl+T</kbd> 置顶</span>
     <span><kbd>Del</kbd> 删除</span>
   </footer>
 
   {#if preview}
     {@const item = preview}
-    <ImagePreview
-      {item}
-      onclose={() => (preview = null)}
-      onpaste={() => {
-        preview = null;
-        paste(item);
-      }}
-    />
+    {@const close = () => {
+      preview = null;
+      searchEl?.focus();
+    }}
+    {@const pasteIt = () => {
+      preview = null;
+      paste(item);
+    }}
+    {#if isImage(item)}
+      <ImagePreview {item} onclose={close} onpaste={pasteIt} />
+    {:else}
+      <TextPreview {item} {query} {now} onclose={close} onpaste={pasteIt} />
+    {/if}
   {/if}
 
   {#if toast}
@@ -544,14 +615,57 @@
     background: var(--line);
     color: var(--ink-2);
   }
-  .clear {
+  .filters {
     margin-left: auto;
+    display: flex;
+    gap: 1px;
+    padding: 2px;
+    border-radius: 6px;
+    background: var(--line);
+  }
+  .filter {
+    width: 26px;
+    height: 22px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    display: grid;
+    place-items: center;
+    color: var(--ink-3);
+  }
+  .filter :global(svg) {
+    width: 14px;
+    height: 14px;
+  }
+  .filter:hover {
+    color: var(--ink);
+  }
+  .filter.active {
+    background: var(--card);
+    color: var(--accent);
+    box-shadow: 0 0 0 1px var(--line);
+  }
+  .clear {
+    width: 26px;
+    height: 26px;
     border: 0;
     background: transparent;
-    padding: 4px 6px;
     border-radius: 4px;
-    font-size: 12px;
+    display: grid;
+    place-items: center;
     color: var(--ink-3);
+  }
+  .link-btn {
+    margin: 10px auto 0;
+    padding: 4px 8px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    font-size: 12.5px;
+    color: var(--accent);
+  }
+  .link-btn:hover {
+    background: var(--accent-soft);
   }
   .clear:hover {
     color: var(--danger);

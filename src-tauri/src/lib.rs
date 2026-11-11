@@ -73,6 +73,7 @@ pub fn run() {
             commands::set_permanent,
             commands::set_pinned,
             commands::clip_image,
+            commands::clip_text,
             commands::delete_clip,
             commands::clear_temp,
             commands::get_settings,

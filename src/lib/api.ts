@@ -3,6 +3,8 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type Tab = "temp" | "perm";
 export type ClipKind = "text" | "rich" | "image" | "files";
+/** 列表的类型筛选；`text` 含富文本与链接，`link` 为整段是网址的文本。 */
+export type KindFilter = "text" | "link" | "image" | "files";
 
 /** 与后端 store::list::PAGE_SIZE 保持一致。 */
 export const PAGE_SIZE = 100;
@@ -20,6 +22,13 @@ export interface ClipItem {
   pinned: boolean;
   lastCopiedAt: number;
   expiresAt: number | null;
+}
+
+export interface ClipText {
+  text: string;
+  /** 文本的总字符数。 */
+  chars: number;
+  truncated: boolean;
 }
 
 export interface Counts {
@@ -149,8 +158,8 @@ export const openSettings = () => invoke<void>("open_settings");
 export const isPaused = () => invoke<boolean>("is_paused");
 export const appInfo = () => invoke<AppInfo>("app_info");
 
-export const listClips = (tab: Tab, query: string, before: Cursor | null) =>
-  invoke<ClipItem[]>("list_clips", { tab, query: query || null, before });
+export const listClips = (tab: Tab, kind: KindFilter | null, query: string, before: Cursor | null) =>
+  invoke<ClipItem[]>("list_clips", { tab, kind, query: query || null, before });
 export const clipCounts = () => invoke<Counts>("clip_counts");
 export const pasteClip = (id: number, plain: boolean) => invoke<{ pasted: boolean }>("paste_clip", { id, plain });
 export const copyClip = (id: number) => invoke<void>("copy_clip", { id });
@@ -158,7 +167,9 @@ export const setPermanent = (id: number, permanent: boolean) => invoke<void>("se
 export const setPinned = (id: number, pinned: boolean) => invoke<void>("set_pinned", { id, pinned });
 /** 图片条目的原图 data URL。 */
 export const clipImage = (id: number) => invoke<string>("clip_image", { id });
-export const deleteClip = (id: number) => invoke<void>("delete_clip", { id });
+/** 条目的完整文本（文件条目为换行分隔的路径）；超长时只返回开头部分。 */
+export const clipText = (id: number) => invoke<ClipText>("clip_text", { id });
+export const deleteClip =(id: number) => invoke<void>("delete_clip", { id });
 export const clearTemp = () => invoke<number>("clear_temp");
 
 export const getSettings = () => invoke<SettingsView>("get_settings");
