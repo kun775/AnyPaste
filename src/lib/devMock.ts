@@ -375,7 +375,7 @@ export function installMock(window: "popup" | "settings") {
           return { temp: visible("temp", null).length, perm: visible("perm", null).length, bytes: 18_400_000 };
         case "app_info":
           return {
-            version: "0.5.0-dev",
+            version: "0.6.0-dev",
             dataDir: "C:\\Users\\me\\AppData\\Roaming\\AnyPaste",
             logDir: "C:\\Users\\me\\AppData\\Roaming\\AnyPaste\\logs",
             repoUrl: "https://github.com/kun775/AnyPaste",
@@ -392,8 +392,8 @@ export function installMock(window: "popup" | "settings") {
             checking: false,
             lastCheckedAt: Date.now(),
             available: {
-              version: "0.5.1",
-              notes: "- 常用片段支持搜索、预览与快捷粘贴\n- 更新按钮即时反馈\n- 下载进度更清晰",
+              version: "0.6.1",
+              notes: "- 列表按粘贴频率自动排序，置顶条目独立队列\n- 常用片段搜索与预览更准确\n- 修复若干问题",
               date: null,
             },
           };
