@@ -19,6 +19,7 @@
   --danger: #c42b1c;
   --danger-soft: rgba(196, 43, 28, 0.1);
   --ok: #0f7b0f;
+  --ok-soft: rgba(15, 123, 15, 0.1);
   --mark: rgba(255, 196, 0, 0.42);
   color-scheme: light;
 }
@@ -41,6 +42,7 @@
     --danger: #ff6b5e;
     --danger-soft: rgba(255, 107, 94, 0.14);
     --ok: #6ccb5f;
+    --ok-soft: rgba(108, 203, 95, 0.13);
     --mark: rgba(242, 184, 75, 0.36);
     color-scheme: dark;
   }
@@ -63,6 +65,7 @@
   --danger: #ff6b5e;
   --danger-soft: rgba(255, 107, 94, 0.14);
   --ok: #6ccb5f;
+  --ok-soft: rgba(108, 203, 95, 0.13);
   --mark: rgba(242, 184, 75, 0.36);
   color-scheme: dark;
 }

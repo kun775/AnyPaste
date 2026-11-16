@@ -132,6 +132,8 @@ export function installMock(window: "popup" | "settings") {
   };
   let saved = { password: false, secretKey: false, passphrase: false };
   let syncStatus: SyncStatus = { state: "disabled", lastSyncAt: null, lastError: null, lastReport: null };
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const emitUpdate = () => emit("update-status", update);
   const syncView = () => ({
     config: sync,
     hasPassword: saved.password,
@@ -147,7 +149,7 @@ export function installMock(window: "popup" | "settings") {
 
   mockWindows(window);
   mockIPC(
-    (cmd, payload) => {
+    async (cmd, payload) => {
       const args = (payload ?? {}) as Record<string, unknown>;
       const id = args.id as number;
       console.debug("[mock]", cmd, args);
@@ -250,7 +252,7 @@ export function installMock(window: "popup" | "settings") {
           return { temp: visible("temp", null).length, perm: visible("perm", null).length, bytes: 18_400_000 };
         case "app_info":
           return {
-            version: "0.3.0-dev",
+            version: "0.4.1-dev",
             dataDir: "C:\\Users\\me\\AppData\\Roaming\\AnyPaste",
             logDir: "C:\\Users\\me\\AppData\\Roaming\\AnyPaste\\logs",
             repoUrl: "https://github.com/kun775/AnyPaste",
@@ -259,16 +261,26 @@ export function installMock(window: "popup" | "settings") {
         case "get_update_status":
           return update;
         case "check_update":
+          update = { ...update, checking: true, error: null };
+          emitUpdate();
+          await sleep(700);
           update = {
             ...update,
+            checking: false,
             lastCheckedAt: Date.now(),
-            available: { version: "0.4.0", notes: "- 新增功能示例\n- 修复问题示例", date: null },
+            available: { version: "0.4.1", notes: "- 更新按钮即时反馈\n- 下载进度更清晰\n- 修复若干问题", date: null },
           };
-          setTimeout(() => emit("update-status", update));
+          emitUpdate();
           return update.available;
         case "install_update":
-          update = { ...update, installing: true, progress: 0.35 };
-          setTimeout(() => emit("update-status", update));
+          update = { ...update, installing: true, progress: null, error: null };
+          emitUpdate();
+          await sleep(600);
+          for (const progress of [0.08, 0.26, 0.51, 0.73, 0.9, 1]) {
+            update = { ...update, progress };
+            emitUpdate();
+            await sleep(350);
+          }
           return null;
         case "open_link":
           return null;

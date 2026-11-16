@@ -3,7 +3,7 @@
 
 use std::{sync::Mutex, time::Duration};
 
-use anyhow::{bail, Context};
+use anyhow::bail;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
@@ -135,18 +135,42 @@ pub async fn install(app: &AppHandle) -> anyhow::Result<()> {
     }
     let svc = app.state::<UpdateService>();
     let _busy = svc.busy.lock().await;
-    let update = app
-        .updater()?
-        .check()
-        .await
-        .map_err(|e| friendly(e.into()))?
-        .context("已是最新版本")?;
-
+    // 安装前需要重新检查版本；先进入安装态，避免点击后界面长时间没有反馈。
     svc.update(app, |s| {
         s.installing = true;
-        s.progress = Some(0.0);
+        s.progress = None;
         s.error = None;
     });
+
+    let result = download_and_install(app, &svc).await;
+    if let Err(e) = &result {
+        log::warn!("安装更新失败: {e:#}");
+        svc.update(app, |s| {
+            s.installing = false;
+            s.progress = None;
+            s.error = Some(format!("{e:#}"));
+        });
+    }
+    result
+}
+
+async fn download_and_install(app: &AppHandle, svc: &UpdateService) -> anyhow::Result<()> {
+    let updater = app.updater().map_err(|e| friendly(e.into()))?;
+    let update = updater
+        .check()
+        .await
+        .map_err(|e| friendly(e.into()))?;
+    let Some(update) = update else {
+        log::info!("安装前检查发现已是最新版本");
+        svc.update(app, |s| {
+            s.installing = false;
+            s.progress = None;
+            s.available = None;
+            s.last_checked_at = Some(now_ms());
+        });
+        return Ok(());
+    };
+    svc.update(app, |s| s.progress = Some(0.0));
     let mut downloaded = 0u64;
     let mut last_reported = 0.0;
     let bytes = update
@@ -162,29 +186,12 @@ pub async fn install(app: &AppHandle) -> anyhow::Result<()> {
             },
             || {},
         )
-        .await;
-    let bytes = match bytes {
-        Ok(b) => b,
-        Err(e) => {
-            let e = friendly(e.into());
-            svc.update(app, |s| {
-                s.installing = false;
-                s.progress = None;
-                s.error = Some(format!("{e:#}"));
-            });
-            return Err(e);
-        }
-    };
+        .await
+        .map_err(|e| friendly_with("下载更新失败", e.into()))?;
     log::info!("更新 {} 已下载并通过签名校验，开始安装", update.version);
-    // 安装程序接管后本进程退出；若启动安装失败则恢复状态
-    if let Err(e) = update.install(bytes) {
-        let e = friendly(e.into());
-        svc.update(app, |s| {
-            s.installing = false;
-            s.error = Some(format!("{e:#}"));
-        });
-        return Err(e);
-    }
+    update
+        .install(bytes)
+        .map_err(|e| friendly_with("启动安装失败", e.into()))?;
     Ok(())
 }
 
@@ -209,12 +216,16 @@ fn popup_visible(app: &AppHandle) -> bool {
 
 /// 发布清单不存在（尚未发布支持自动更新的版本）等情况给出可读的提示。
 fn friendly(e: anyhow::Error) -> anyhow::Error {
+    friendly_with("检查更新失败", e)
+}
+
+fn friendly_with(context: &'static str, e: anyhow::Error) -> anyhow::Error {
     let text = format!("{e:#}");
     if text.contains("404") || text.contains("Could not fetch a valid release JSON") {
         anyhow::anyhow!("暂未获取到可用的更新信息，请稍后再试，或前往发布页查看")
     } else if text.contains("signature") || text.contains("Signature") {
         anyhow::anyhow!("更新包签名校验失败，已取消安装")
     } else {
-        e.context("检查更新失败")
+        e.context(context)
     }
 }
