@@ -191,6 +191,15 @@ impl Store {
         Ok(n > 0)
     }
 
+    /// 记录一次实际粘贴，用于按使用频率排序。本机统计，不参与同步，也不改变复制时间。
+    pub fn record_paste(&self, id: i64) -> rusqlite::Result<()> {
+        self.conn().execute(
+            "UPDATE clips SET paste_count = paste_count + 1 WHERE id = ?1 AND deleted_at IS NULL",
+            [id],
+        )?;
+        Ok(())
+    }
+
     /// 最近复制且未过期的临时条目。
     pub fn latest_temp(&self, now: i64) -> rusqlite::Result<Option<i64>> {
         let row = self.conn().query_row(

@@ -13,12 +13,14 @@ const PREVIEW_CHARS: i64 = 400;
 /// trigram 分词需要至少 3 个字符，更短的查询退化为 LIKE。
 const FTS_MIN_CHARS: usize = 3;
 
-/// 分页游标：上一页最后一条（非置顶）的复制时间和 ID。
+/// 分页游标：上一页最后一条（非置顶）的排序键，按频率排序时还要带上粘贴次数。
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Cursor {
     pub last_copied_at: i64,
     pub id: i64,
+    #[serde(default)]
+    pub paste_count: i64,
 }
 
 /// 列表的内容类型筛选。
@@ -66,6 +68,8 @@ pub struct ClipItem {
     pub pinned: bool,
     pub last_copied_at: i64,
     pub expires_at: Option<i64>,
+    /// 通过 AnyPaste 实际粘贴的次数，用于按使用频率排序。
+    pub paste_count: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -88,9 +92,17 @@ fn visible(now: &str) -> String {
     format!("deleted_at IS NULL AND (is_permanent = 1 OR expires_at > {now})")
 }
 
+/// 本次查询的是哪个队列；置顶条目按置顶时间排序，不参与频率排序。
+#[derive(Clone, Copy)]
+enum Queue {
+    Pinned,
+    Normal { by_frequency: bool },
+}
+
 impl Store {
     /// 列出一页条目；`filter`、`search` 为空时不过滤。第一页（`before` 为空）先返回全部置顶条目
-    /// （按置顶时间倒序），再接按最近复制时间倒序的普通条目；后续页只含普通条目。
+    /// （按置顶时间倒序，独立于普通条目），再接普通条目：`by_frequency` 为 true 时按粘贴次数
+    /// 从高到低、其次按最近复制时间排序，否则只按最近复制时间排序。后续页只含普通条目。
     pub fn list_clips_filtered(
         &self,
         permanent: bool,
@@ -98,17 +110,25 @@ impl Store {
         search: Option<&str>,
         before: Option<Cursor>,
         now: i64,
+        by_frequency: bool,
     ) -> rusqlite::Result<Vec<ClipItem>> {
         let mut items = if before.is_none() {
-            self.query_items(permanent, filter, search, None, now, true)?
+            self.query_items(permanent, filter, search, None, now, Queue::Pinned)?
         } else {
             Vec::new()
         };
-        items.extend(self.query_items(permanent, filter, search, before, now, false)?);
+        items.extend(self.query_items(
+            permanent,
+            filter,
+            search,
+            before,
+            now,
+            Queue::Normal { by_frequency },
+        )?);
         Ok(items)
     }
 
-    /// 不带类型筛选的列表，供测试使用。
+    /// 不带类型筛选的列表，供测试使用；按最近复制时间排序。
     #[cfg(test)]
     pub fn list_clips(
         &self,
@@ -117,7 +137,7 @@ impl Store {
         before: Option<Cursor>,
         now: i64,
     ) -> rusqlite::Result<Vec<ClipItem>> {
-        self.list_clips_filtered(permanent, None, search, before, now)
+        self.list_clips_filtered(permanent, None, search, before, now, false)
     }
 
     fn query_items(
@@ -127,23 +147,38 @@ impl Store {
         search: Option<&str>,
         before: Option<Cursor>,
         now: i64,
-        pinned: bool,
+        queue: Queue,
     ) -> rusqlite::Result<Vec<ClipItem>> {
+        let by_frequency = matches!(queue, Queue::Normal { by_frequency: true });
         let mut sql = format!(
             "SELECT id, kind, substr(text, 1, {PREVIEW_CHARS}), html IS NOT NULL OR rtf IS NOT NULL,
                     thumb, size_bytes, source_app, is_permanent, last_copied_at, expires_at,
-                    pinned_at IS NOT NULL
+                    pinned_at IS NOT NULL, paste_count
              FROM clips
              WHERE is_permanent = ?1 AND {} AND pinned_at IS {}",
             visible("?2"),
-            if pinned { "NOT NULL" } else { "NULL" }
+            match queue {
+                Queue::Pinned => "NOT NULL",
+                Queue::Normal { .. } => "NULL",
+            }
         );
         let mut args: Vec<Value> = vec![(permanent as i64).into(), now.into()];
 
         if let Some(c) = before {
-            sql.push_str(" AND (last_copied_at < ?3 OR (last_copied_at = ?3 AND id < ?4))");
-            args.push(c.last_copied_at.into());
-            args.push(c.id.into());
+            if by_frequency {
+                // 与 ORDER BY paste_count, last_copied_at, id 对应的键集分页
+                sql.push_str(
+                    " AND (paste_count < ?3 OR (paste_count = ?3 AND (last_copied_at < ?4
+                       OR (last_copied_at = ?4 AND id < ?5))))",
+                );
+                args.push(c.paste_count.into());
+                args.push(c.last_copied_at.into());
+                args.push(c.id.into());
+            } else {
+                sql.push_str(" AND (last_copied_at < ?3 OR (last_copied_at = ?3 AND id < ?4))");
+                args.push(c.last_copied_at.into());
+                args.push(c.id.into());
+            }
         }
 
         if let Some(f) = filter {
@@ -163,10 +198,14 @@ impl Store {
             }
         }
 
-        sql.push_str(&if pinned {
-            format!(" ORDER BY pinned_at DESC, id DESC LIMIT {MAX_PINNED}")
-        } else {
-            format!(" ORDER BY last_copied_at DESC, id DESC LIMIT {PAGE_SIZE}")
+        sql.push_str(&match queue {
+            Queue::Pinned => format!(" ORDER BY pinned_at DESC, id DESC LIMIT {MAX_PINNED}"),
+            Queue::Normal { by_frequency: true } => {
+                format!(" ORDER BY paste_count DESC, last_copied_at DESC, id DESC LIMIT {PAGE_SIZE}")
+            }
+            Queue::Normal { by_frequency: false } => {
+                format!(" ORDER BY last_copied_at DESC, id DESC LIMIT {PAGE_SIZE}")
+            }
         });
 
         let conn = self.conn();
@@ -184,6 +223,7 @@ impl Store {
                 last_copied_at: r.get(8)?,
                 expires_at: r.get(9)?,
                 pinned: r.get(10)?,
+                paste_count: r.get(11)?,
             })
         })?;
         rows.collect()
@@ -269,7 +309,7 @@ mod tests {
         let first = store.list_clips(false, None, None, 0).unwrap();
         assert_eq!(first.len(), PAGE_SIZE);
         let last = first.last().unwrap();
-        let cursor = Cursor { last_copied_at: last.last_copied_at, id: last.id };
+        let cursor = Cursor { last_copied_at: last.last_copied_at, id: last.id, paste_count: 0 };
         let second = store.list_clips(false, None, Some(cursor), 0).unwrap();
         assert_eq!(second.len(), 5);
         assert!(second.iter().all(|i| i.last_copied_at < last.last_copied_at));
@@ -310,7 +350,7 @@ mod tests {
 
         let last = first.last().unwrap();
         let second = store
-            .list_clips(false, None, Some(Cursor { last_copied_at: last.last_copied_at, id: last.id }), 0)
+            .list_clips(false, None, Some(Cursor { last_copied_at: last.last_copied_at, id: last.id, paste_count: 0 }), 0)
             .unwrap();
         // 剩余 1 条普通条目，置顶条目不会重复出现
         assert_eq!(second.len(), 1);
@@ -329,6 +369,58 @@ mod tests {
     }
 
     #[test]
+    fn orders_by_paste_frequency_with_pins_separate() {
+        let store = Store::open_in_memory().unwrap();
+        let id = seed(&store, &["a", "b", "c", "d"]);
+        for _ in 0..2 {
+            store.record_paste(id[0]).unwrap();
+        }
+        store.record_paste(id[1]).unwrap();
+        store.record_paste(id[2]).unwrap();
+
+        // a 粘贴最多；b、c 次数相同，按复制时间 c 在前；d 未粘贴过，排在最后
+        let list = store.list_clips_filtered(false, None, None, None, 0, true).unwrap();
+        assert_eq!(ids_of(&list), vec![id[0], id[2], id[1], id[3]]);
+        assert_eq!(list[0].paste_count, 2);
+
+        // 置顶条目是独立队列，排在频率排序结果之前
+        store.set_pinned(id[3], true, 5).unwrap();
+        let list = store.list_clips_filtered(false, None, None, None, 0, true).unwrap();
+        assert_eq!(ids_of(&list), vec![id[3], id[0], id[2], id[1]]);
+
+        // 关闭频率排序后回到最近复制时间顺序
+        let recent = store.list_clips_filtered(false, None, None, None, 0, false).unwrap();
+        assert_eq!(ids_of(&recent), vec![id[3], id[2], id[1], id[0]]);
+    }
+
+    #[test]
+    fn paginates_by_frequency_with_cursor() {
+        let store = Store::open_in_memory().unwrap();
+        let texts: Vec<String> = (0..PAGE_SIZE + 5).map(|i| format!("item {i}")).collect();
+        let ids: Vec<i64> = texts
+            .iter()
+            .enumerate()
+            .map(|(i, t)| store.upsert_clip(&text_clip(t), i as i64, 1_000_000).unwrap().id)
+            .collect();
+        for id in ids.iter().take(10) {
+            store.record_paste(*id).unwrap();
+        }
+        for id in ids.iter().take(5) {
+            store.record_paste(*id).unwrap();
+        }
+
+        let first = store.list_clips_filtered(false, None, None, None, 0, true).unwrap();
+        assert_eq!(first.len(), PAGE_SIZE);
+        assert_eq!(first[0].paste_count, 2);
+        assert_eq!(first[5].paste_count, 1);
+        let last = first.last().unwrap();
+        let cursor = Cursor { last_copied_at: last.last_copied_at, id: last.id, paste_count: last.paste_count };
+        let second = store.list_clips_filtered(false, None, None, Some(cursor), 0, true).unwrap();
+        assert_eq!(second.len(), 5);
+        assert!(second.iter().all(|i| i.paste_count == 0));
+    }
+
+    #[test]
     fn filters_by_kind() {
         let store = Store::open_in_memory().unwrap();
         let id = seed(&store, &["plain note", " https://example.com/a?b=1\n", "see https://example.com", "HTTP://X.IO"]);
@@ -339,7 +431,7 @@ mod tests {
         files.kind = crate::store::ClipKind::Files;
         let file = store.upsert_clip(&files, 110, TTL).unwrap().id;
 
-        let list = |f: KindFilter, q: Option<&str>| ids(&store.list_clips_filtered(false, Some(f), q, None, 0).unwrap());
+        let list = |f: KindFilter, q: Option<&str>| ids(&store.list_clips_filtered(false, Some(f), q, None, 0, false).unwrap());
         assert_eq!(list(KindFilter::Text, None), vec![id[3], id[2], id[1], id[0]]);
         // 首尾空白不影响判定；网址只是内容的一部分时不算链接
         assert_eq!(list(KindFilter::Link, None), vec![id[3], id[1]]);
@@ -374,6 +466,7 @@ mod tests {
             pinned: false,
             last_copied_at: 0,
             expires_at: None,
+            paste_count: 0,
         };
         let json = serde_json::to_value(&item).unwrap();
         assert_eq!(json["thumb"], "data:image/png;base64,AQID");

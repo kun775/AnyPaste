@@ -123,7 +123,11 @@
     if (!last) return;
     loadingMore = true;
     try {
-      const more = await listClips(current, filter, query, { lastCopiedAt: last.lastCopiedAt, id: last.id });
+      const more = await listClips(current, filter, query, {
+        lastCopiedAt: last.lastCopiedAt,
+        id: last.id,
+        pasteCount: last.pasteCount,
+      });
       if (seq !== requestSeq) return;
       items = [...items, ...more];
       hasMore = more.length === PAGE_SIZE;
@@ -148,9 +152,15 @@
     return () => clearTimeout(timer);
   });
 
+  let sortedByFrequency: boolean | undefined;
+
   function applySettings(s: Settings) {
+    // 排序方式变化后重新加载，正在显示的列表立即按新规则排列
+    const sortChanged = sortedByFrequency !== undefined && sortedByFrequency !== s.sortByFrequency;
+    sortedByFrequency = s.sortByFrequency;
     plainDefault = s.plainPasteDefault;
     applyTheme(s.theme);
+    if (sortChanged) reload();
   }
 
   onMount(() => {
@@ -339,7 +349,7 @@
   }
 
   async function select(index: number) {
-    sel = Math.max(0, Math.min(index, items.length - 1));
+    sel = Math.max(0, Math.min(index, rows.length - 1));
     await tick();
     listEl?.querySelector(".sel")?.scrollIntoView({ block: "nearest" });
   }

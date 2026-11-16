@@ -19,6 +19,7 @@ const DEFAULT_SETTINGS: Settings = {
   paused: false,
   theme: "system",
   popupPosition: "cursor",
+  sortByFrequency: true,
   plainPasteDefault: false,
   popupReleaseSecs: 60,
   hotkeyOpen: "alt+v",
@@ -86,13 +87,16 @@ function fixtures(): ClipItem[] {
       pinned: false,
       lastCopiedAt,
       expiresAt: lastCopiedAt + TTL,
+      pasteCount: 0,
       ...extra,
     } satisfies ClipItem;
   };
   const list = [
-    make("text", "会议改到周四下午 3 点，地点 B2 会议室，记得带上上季度的数据报表。", "WeChat.exe", 2 * MIN),
-    make("text", "https://tauri.app/plugin/global-shortcut/", "chrome.exe", 14 * MIN),
-    make("rich", "季度总结：用户增长 23%，留存率提升至 41%。", "WINWORD.EXE", 48 * MIN),
+    make("text", "会议改到周四下午 3 点，地点 B2 会议室，记得带上上季度的数据报表。", "WeChat.exe", 2 * MIN, {
+      pasteCount: 12,
+    }),
+    make("text", "https://tauri.app/plugin/global-shortcut/", "chrome.exe", 14 * MIN, { pasteCount: 7 }),
+    make("rich", "季度总结：用户增长 23%，留存率提升至 41%。", "WINWORD.EXE", 48 * MIN, { pasteCount: 4 }),
     make("image", "1280×720", "SnippingTool.exe", 3 * HOUR, { thumb: THUMB, sizeBytes: 245_000 }),
     make("files", "C:\\Users\\me\\design-v2.fig\nC:\\Users\\me\\logo.svg", "explorer.exe", 9 * HOUR),
     make("files", "C:\\Users\\me\\WeChat Files\\temp\\b810118b64edc447ef17d8e02.jpg", "Weixin.exe", 5 * MIN, {
@@ -188,6 +192,11 @@ export function installMock(window: "popup" | "settings") {
     const preview = item?.preview ?? "";
     return LONG_TEXT.startsWith(preview) && preview.length === 400 ? LONG_TEXT : preview;
   };
+  const snippetPreview = (content: string, query: string) => {
+    const at = query ? content.toLowerCase().indexOf(query.toLowerCase()) : -1;
+    const start = at > 48 ? at - 24 : 0;
+    return (start > 0 ? "…" : "") + content.slice(start, start + 400);
+  };
   const snippetTitleOf = (text: string) => {
     const first = text.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? "";
     return first ? (first.length > 40 ? `${first.slice(0, 40)}…` : first) : "剪贴板片段";
@@ -203,12 +212,24 @@ export function installMock(window: "popup" | "settings") {
         case "list_clips": {
           const before = args.before as Cursor | null;
           const kind = (args.kind ?? null) as KindFilter | null;
+          const byFrequency = settings.sortByFrequency;
           const all = visible(args.tab as Tab, args.query as string | null).filter((i) => matchesKind(i, kind));
           const pinned = before ? [] : all.filter((i) => i.pinned);
-          let list = all.filter((i) => !i.pinned);
+          let list = all
+            .filter((i) => !i.pinned)
+            .sort((a, b) =>
+              byFrequency
+                ? b.pasteCount - a.pasteCount || b.lastCopiedAt - a.lastCopiedAt || b.id - a.id
+                : b.lastCopiedAt - a.lastCopiedAt || b.id - a.id,
+            );
           if (before) {
-            list = list.filter(
-              (i) => i.lastCopiedAt < before.lastCopiedAt || (i.lastCopiedAt === before.lastCopiedAt && i.id < before.id),
+            list = list.filter((i) =>
+              byFrequency
+                ? i.pasteCount < before.pasteCount ||
+                  (i.pasteCount === before.pasteCount &&
+                    (i.lastCopiedAt < before.lastCopiedAt ||
+                      (i.lastCopiedAt === before.lastCopiedAt && i.id < before.id)))
+                : i.lastCopiedAt < before.lastCopiedAt || (i.lastCopiedAt === before.lastCopiedAt && i.id < before.id),
             );
           }
           return [...pinned, ...list.slice(0, 100)];
@@ -250,7 +271,7 @@ export function installMock(window: "popup" | "settings") {
           return snippets
             .filter((s) => !q || s.title.toLowerCase().includes(q) || s.content.toLowerCase().includes(q))
             .sort((a, b) => b.updatedAt - a.updatedAt || b.id - a.id)
-            .map(snippetItem);
+            .map((s) => ({ ...snippetItem(s), preview: snippetPreview(s.content, q) }));
         }
         case "get_snippet": {
           const s = snippets.find((item) => item.id === id);

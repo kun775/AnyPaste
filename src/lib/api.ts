@@ -22,6 +22,8 @@ export interface ClipItem {
   pinned: boolean;
   lastCopiedAt: number;
   expiresAt: number | null;
+  /** 通过 AnyPaste 实际粘贴的次数，用于按使用频率排序。 */
+  pasteCount: number;
 }
 
 export interface ClipText {
@@ -56,6 +58,8 @@ export interface SnippetDraft {
 export interface Cursor {
   lastCopiedAt: number;
   id: number;
+  /** 按频率分页时的粘贴次数；按时间排序时后端会忽略。 */
+  pasteCount: number;
 }
 
 export interface AppInfo {
@@ -92,6 +96,8 @@ export interface Settings {
   paused: boolean;
   theme: Theme;
   popupPosition: PopupPosition;
+  /** 按实际粘贴次数从高到低排列（置顶条目始终在最前）；关闭后按最近复制时间排列。 */
+  sortByFrequency: boolean;
   plainPasteDefault: boolean;
   /** 弹出列表隐藏多少秒后释放内存；0 表示常驻。 */
   popupReleaseSecs: number;

@@ -90,7 +90,7 @@
 
     <footer>
       <span class="hint">
-        {body.length.toLocaleString()} 字符 · <kbd>Ctrl+Enter</kbd> 保存 · <kbd>Esc</kbd> 取消
+        {[...body].length.toLocaleString()} 字符 · <kbd>Ctrl+Enter</kbd> 保存 · <kbd>Esc</kbd> 取消
       </span>
       {#if error}<span class="error">{error}</span>{/if}
       <button class="btn" disabled={saving} onclick={cancel}>取消</button>

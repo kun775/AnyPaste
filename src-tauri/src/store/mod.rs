@@ -15,7 +15,7 @@ use rusqlite::Connection;
 
 pub use clips::{ClipContent, ClipKind, NewClip};
 pub use list::{ClipItem, Counts, Cursor, KindFilter};
-pub use snippets::SnippetItem;
+pub use snippets::{CreateSnippetError, SnippetItem, MAX_SNIPPETS};
 pub use sync::{ClipRecord, Fingerprint, LocalState};
 #[cfg(test)]
 pub(crate) use sync::tests as sync_tests;
@@ -28,6 +28,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/002_fts.sql"),
     include_str!("migrations/003_pin.sql"),
     include_str!("migrations/004_snippets.sql"),
+    include_str!("migrations/005_paste_count.sql"),
 ];
 
 /// SQLite 存储。连接用互斥锁串行化，剪贴板监听、清理线程和前端命令共用。

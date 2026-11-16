@@ -10,7 +10,10 @@ use crate::{
     prefs,
     settings::{Settings, SettingsState},
     state::AppState,
-    store::{now_ms, ClipContent, ClipItem, ClipKind, Counts, Cursor, KindFilter, SnippetItem, Store},
+    store::{
+        now_ms, ClipContent, ClipItem, ClipKind, Counts, CreateSnippetError, Cursor, KindFilter, SnippetItem, Store,
+        MAX_SNIPPETS,
+    },
     sync::{self, SecretsInput, SyncConfig, SyncService, SyncStatus},
     updater::{self, UpdateInfo, UpdateService, UpdateStatus},
     windows,
@@ -50,13 +53,21 @@ pub fn is_paused(state: State<'_, AppState>) -> bool {
 #[tauri::command]
 pub async fn list_clips(
     store: State<'_, Store>,
+    prefs: State<'_, SettingsState>,
     tab: Tab,
     kind: Option<KindFilter>,
     query: Option<String>,
     before: Option<Cursor>,
 ) -> CmdResult<Vec<ClipItem>> {
     store
-        .list_clips_filtered(matches!(tab, Tab::Perm), kind, query.as_deref(), before, now_ms())
+        .list_clips_filtered(
+            matches!(tab, Tab::Perm),
+            kind,
+            query.as_deref(),
+            before,
+            now_ms(),
+            prefs.get().sort_by_frequency,
+        )
         .map_err(err)
 }
 
@@ -82,7 +93,14 @@ pub async fn paste_clip(app: AppHandle, id: i64, plain: bool) -> CmdResult<Paste
 
 fn paste_blocking(app: &AppHandle, id: i64, plain: bool) -> anyhow::Result<PasteResult> {
     let content = clip_content(app, id)?;
-    paste_content_blocking(app, content, plain)
+    let result = paste_content_blocking(app, content, plain)?;
+    // 只有真正粘贴到目标窗口才计入使用频率；从托盘打开时仅复制不算
+    if result.pasted {
+        if let Err(e) = app.state::<Store>().record_paste(id) {
+            log::warn!("记录粘贴次数失败: {e}");
+        }
+    }
+    Ok(result)
 }
 
 fn paste_content_blocking(app: &AppHandle, content: ClipContent, plain: bool) -> anyhow::Result<PasteResult> {
@@ -100,16 +118,15 @@ fn paste_content_blocking(app: &AppHandle, content: ClipContent, plain: bool) ->
 
 #[tauri::command]
 pub async fn copy_clip(app: AppHandle, id: i64) -> CmdResult<()> {
-    tauri::async_runtime::spawn_blocking(move || copy_to_clipboard(&app, id, false))
+    tauri::async_runtime::spawn_blocking(move || copy_to_clipboard(&app, id))
         .await
         .map_err(err)?
         .map_err(err)
 }
 
 /// 写回剪贴板；写入带有 AnyPaste 标记，监听器不会重复记录，条目在列表中的位置保持不变。
-fn copy_to_clipboard(app: &AppHandle, id: i64, plain: bool) -> anyhow::Result<()> {
-    let content = clip_content(app, id)?;
-    write_clipboard(app, content, plain)
+fn copy_to_clipboard(app: &AppHandle, id: i64) -> anyhow::Result<()> {
+    write_clipboard(app, clip_content(app, id)?, false)
 }
 
 fn clip_content(app: &AppHandle, id: i64) -> anyhow::Result<ClipContent> {
@@ -219,7 +236,6 @@ pub async fn clear_temp(app: AppHandle, store: State<'_, Store>, paths: State<'_
 }
 
 const MAX_SNIPPET_TITLE_CHARS: usize = 80;
-const MAX_SNIPPETS: usize = 200;
 
 fn validate_snippet(title: &str, content: &str, max_bytes: usize) -> CmdResult<(String, String)> {
     let title = title.trim();
@@ -252,11 +268,15 @@ fn snippet_title(text: &str) -> String {
     }
 }
 
-fn snippet_store_error(e: rusqlite::Error) -> String {
-    match e {
-        rusqlite::Error::QueryReturnedNoRows => "片段不存在或已删除".into(),
-        e => err(e),
-    }
+/// 校验并新建片段，两条创建路径（设置页新建、从剪贴板保存）共用。
+fn create_snippet(app: &AppHandle, store: &Store, title: &str, content: &str, max_bytes: usize) -> CmdResult<SnippetItem> {
+    let (title, content) = validate_snippet(title, content, max_bytes)?;
+    let item = store.create_snippet(&title, &content, now_ms()).map_err(|e| match e {
+        CreateSnippetError::LimitReached => format!("最多保存 {MAX_SNIPPETS} 个常用片段，请先删除不再使用的片段"),
+        CreateSnippetError::Db(e) => err(e),
+    })?;
+    events::snippets_changed(app);
+    Ok(item)
 }
 
 #[tauri::command]
@@ -290,13 +310,19 @@ pub async fn save_snippet(
     title: String,
     content: String,
 ) -> CmdResult<SnippetItem> {
-    let (title, content) = validate_snippet(&title, &content, prefs.get().max_item_bytes)?;
-    if id.is_none() && store.snippet_count().map_err(err)? >= MAX_SNIPPETS {
-        return Err(format!("最多保存 {MAX_SNIPPETS} 个常用片段，请先删除不再使用的片段"));
+    let max_bytes = prefs.get().max_item_bytes;
+    match id {
+        None => create_snippet(&app, &store, &title, &content, max_bytes),
+        Some(id) => {
+            let (title, content) = validate_snippet(&title, &content, max_bytes)?;
+            let item = store
+                .update_snippet(id, &title, &content, now_ms())
+                .map_err(err)?
+                .ok_or("片段不存在或已删除")?;
+            events::snippets_changed(&app);
+            Ok(item)
+        }
     }
-    let item = store.save_snippet(id, &title, &content, now_ms()).map_err(snippet_store_error)?;
-    events::snippets_changed(&app);
-    Ok(item)
 }
 
 #[tauri::command]
@@ -325,16 +351,7 @@ pub async fn save_clip_as_snippet(
     }
     let text = content.text.unwrap_or_default();
     let title = snippet_title(&text);
-    let (title, content) = validate_snippet(&title, &text, prefs.get().max_item_bytes)?;
-    if app.state::<Store>().snippet_count().map_err(err)? >= MAX_SNIPPETS {
-        return Err(format!("最多保存 {MAX_SNIPPETS} 个常用片段，请先删除不再使用的片段"));
-    }
-    let item = app
-        .state::<Store>()
-        .save_snippet(None, &title, &content, now_ms())
-        .map_err(snippet_store_error)?;
-    events::snippets_changed(&app);
-    Ok(item)
+    create_snippet(&app, &app.state::<Store>(), &title, &text, prefs.get().max_item_bytes)
 }
 
 fn load_snippet(app: &AppHandle, id: i64) -> anyhow::Result<ClipContent> {

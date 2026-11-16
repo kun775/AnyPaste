@@ -191,6 +191,13 @@
       </div>
       <div class="row">
         <div class="rt">
+          <b>按粘贴频率排序</b>
+          <small>按实际粘贴次数从高到低排列，置顶条目始终单独排在最前；关闭后按最近复制时间排列</small>
+        </div>
+        <label class="switch"><input type="checkbox" checked={s.sortByFrequency} onchange={(e) => save({ sortByFrequency: e.currentTarget.checked })} /><span></span></label>
+      </div>
+      <div class="row">
+        <div class="rt">
           <b>空闲后释放弹出列表</b>
           <small>释放后不占用内存，下次打开需约 1 秒加载；常驻则始终秒开，但会多占用约 150 MB 内存</small>
         </div>

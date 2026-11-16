@@ -42,6 +42,8 @@ pub struct Settings {
     pub paused: bool,
     pub theme: Theme,
     pub popup_position: PopupPosition,
+    /// 按实际粘贴次数从高到低排列普通条目（置顶条目始终单独排在最前）；关闭后按最近复制时间排列。
+    pub sort_by_frequency: bool,
     /// 回车默认以纯文本粘贴（Shift+Enter 反之）。
     pub plain_paste_default: bool,
     /// 弹出列表隐藏多少秒后释放（销毁 WebView 以回收内存）；0 表示常驻，打开最快但占用内存较多。
@@ -77,6 +79,7 @@ impl Default for Settings {
             paused: false,
             theme: Theme::System,
             popup_position: PopupPosition::Cursor,
+            sort_by_frequency: true,
             plain_paste_default: false,
             popup_release_secs: 60,
             hotkey_open: "alt+v".into(),
@@ -252,6 +255,8 @@ mod tests {
         assert!(s.paused);
         assert_eq!(s.theme, Theme::Dark);
         assert_eq!(s.hotkey_open, "alt+v");
+        // 新增设置项默认开启频率排序，老版本保存的设置升级后也生效
+        assert!(s.sort_by_frequency);
     }
 
     #[test]
