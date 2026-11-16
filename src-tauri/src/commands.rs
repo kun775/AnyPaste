@@ -10,7 +10,7 @@ use crate::{
     prefs,
     settings::{Settings, SettingsState},
     state::AppState,
-    store::{now_ms, ClipItem, Counts, Cursor, KindFilter, Store},
+    store::{now_ms, ClipContent, ClipItem, ClipKind, Counts, Cursor, KindFilter, SnippetItem, Store},
     sync::{self, SecretsInput, SyncConfig, SyncService, SyncStatus},
     updater::{self, UpdateInfo, UpdateService, UpdateStatus},
     windows,
@@ -81,7 +81,12 @@ pub async fn paste_clip(app: AppHandle, id: i64, plain: bool) -> CmdResult<Paste
 }
 
 fn paste_blocking(app: &AppHandle, id: i64, plain: bool) -> anyhow::Result<PasteResult> {
-    copy_to_clipboard(app, id, plain)?;
+    let content = clip_content(app, id)?;
+    paste_content_blocking(app, content, plain)
+}
+
+fn paste_content_blocking(app: &AppHandle, content: ClipContent, plain: bool) -> anyhow::Result<PasteResult> {
+    write_clipboard(app, content, plain)?;
     let Some(target) = app.state::<AppState>().paste_target() else {
         return Ok(PasteResult { pasted: false });
     };
@@ -103,7 +108,15 @@ pub async fn copy_clip(app: AppHandle, id: i64) -> CmdResult<()> {
 
 /// 写回剪贴板；写入带有 AnyPaste 标记，监听器不会重复记录，条目在列表中的位置保持不变。
 fn copy_to_clipboard(app: &AppHandle, id: i64, plain: bool) -> anyhow::Result<()> {
-    let content = app.state::<Store>().clip_content(id)?.context("条目不存在或已删除")?;
+    let content = clip_content(app, id)?;
+    write_clipboard(app, content, plain)
+}
+
+fn clip_content(app: &AppHandle, id: i64) -> anyhow::Result<ClipContent> {
+    app.state::<Store>().clip_content(id)?.context("条目不存在或已删除")
+}
+
+fn write_clipboard(app: &AppHandle, content: ClipContent, plain: bool) -> anyhow::Result<()> {
     #[cfg(windows)]
     crate::clipboard::write(content, plain, &app.state::<AppPaths>().images_dir)?;
     #[cfg(not(windows))]
@@ -160,7 +173,7 @@ pub struct ClipText {
     truncated: bool,
 }
 
-fn clip_text_of(mut text: String) -> ClipText {
+fn text_preview_of(mut text: String) -> ClipText {
     let chars = text.chars().count();
     let truncated = chars > TEXT_PREVIEW_CHARS;
     if let Some((end, _)) = text.char_indices().nth(TEXT_PREVIEW_CHARS) {
@@ -172,7 +185,13 @@ fn clip_text_of(mut text: String) -> ClipText {
 #[tauri::command]
 pub async fn clip_text(store: State<'_, Store>, id: i64) -> CmdResult<ClipText> {
     let content = store.clip_content(id).map_err(err)?.ok_or("条目不存在或已删除")?;
-    Ok(clip_text_of(content.text.unwrap_or_default()))
+    Ok(text_preview_of(content.text.unwrap_or_default()))
+}
+
+#[tauri::command]
+pub async fn snippet_text(store: State<'_, Store>, id: i64) -> CmdResult<ClipText> {
+    let text = store.snippet_content(id).map_err(err)?.ok_or("片段不存在或已删除")?;
+    Ok(text_preview_of(text))
 }
 
 #[tauri::command]
@@ -197,6 +216,154 @@ pub async fn clear_temp(app: AppHandle, store: State<'_, Store>, paths: State<'_
     log::info!("已清空临时条目 {} 条", deleted.rows);
     events::clips_changed(&app);
     Ok(deleted.rows)
+}
+
+const MAX_SNIPPET_TITLE_CHARS: usize = 80;
+const MAX_SNIPPETS: usize = 200;
+
+fn validate_snippet(title: &str, content: &str, max_bytes: usize) -> CmdResult<(String, String)> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("片段标题不能为空".into());
+    }
+    if title.chars().count() > MAX_SNIPPET_TITLE_CHARS {
+        return Err(format!("片段标题不能超过 {MAX_SNIPPET_TITLE_CHARS} 个字符"));
+    }
+    if content.trim().is_empty() {
+        return Err("片段内容不能为空".into());
+    }
+    if content.len() > max_bytes {
+        return Err(format!("片段内容超出大小上限（{} MB）", max_bytes / 1024 / 1024));
+    }
+    Ok((title.to_string(), content.to_string()))
+}
+
+/// 从文本首行生成片段标题；过长时保留前 40 个字符。
+fn snippet_title(text: &str) -> String {
+    let first = text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default();
+    let mut title: String = first.chars().take(40).collect();
+    if first.chars().count() > 40 {
+        title.push('…');
+    }
+    if title.is_empty() {
+        "剪贴板片段".into()
+    } else {
+        title
+    }
+}
+
+fn snippet_store_error(e: rusqlite::Error) -> String {
+    match e {
+        rusqlite::Error::QueryReturnedNoRows => "片段不存在或已删除".into(),
+        e => err(e),
+    }
+}
+
+#[tauri::command]
+pub async fn list_snippets(store: State<'_, Store>, query: Option<String>) -> CmdResult<Vec<SnippetItem>> {
+    store.list_snippets(query.as_deref()).map_err(err)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnippetDraft {
+    id: i64,
+    title: String,
+    content: String,
+}
+
+#[tauri::command]
+pub async fn get_snippet(store: State<'_, Store>, id: i64) -> CmdResult<SnippetDraft> {
+    let (title, content) = store
+        .snippet_draft(id)
+        .map_err(err)?
+        .ok_or("片段不存在或已删除")?;
+    Ok(SnippetDraft { id, title, content })
+}
+
+#[tauri::command]
+pub async fn save_snippet(
+    app: AppHandle,
+    store: State<'_, Store>,
+    prefs: State<'_, SettingsState>,
+    id: Option<i64>,
+    title: String,
+    content: String,
+) -> CmdResult<SnippetItem> {
+    let (title, content) = validate_snippet(&title, &content, prefs.get().max_item_bytes)?;
+    if id.is_none() && store.snippet_count().map_err(err)? >= MAX_SNIPPETS {
+        return Err(format!("最多保存 {MAX_SNIPPETS} 个常用片段，请先删除不再使用的片段"));
+    }
+    let item = store.save_snippet(id, &title, &content, now_ms()).map_err(snippet_store_error)?;
+    events::snippets_changed(&app);
+    Ok(item)
+}
+
+#[tauri::command]
+pub async fn delete_snippet(app: AppHandle, store: State<'_, Store>, id: i64) -> CmdResult<()> {
+    if !store.delete_snippet(id).map_err(err)? {
+        return Err("片段不存在或已删除".into());
+    }
+    events::snippets_changed(&app);
+    Ok(())
+}
+
+/// 把文本条目按首行标题保存为片段。
+#[tauri::command]
+pub async fn save_clip_as_snippet(
+    app: AppHandle,
+    prefs: State<'_, SettingsState>,
+    id: i64,
+) -> CmdResult<SnippetItem> {
+    let content = app
+        .state::<Store>()
+        .clip_content(id)
+        .map_err(err)?
+        .ok_or("条目不存在或已删除")?;
+    if !matches!(content.kind, ClipKind::Text | ClipKind::Rich) {
+        return Err("只有文本条目可以存为片段".into());
+    }
+    let text = content.text.unwrap_or_default();
+    let title = snippet_title(&text);
+    let (title, content) = validate_snippet(&title, &text, prefs.get().max_item_bytes)?;
+    if app.state::<Store>().snippet_count().map_err(err)? >= MAX_SNIPPETS {
+        return Err(format!("最多保存 {MAX_SNIPPETS} 个常用片段，请先删除不再使用的片段"));
+    }
+    let item = app
+        .state::<Store>()
+        .save_snippet(None, &title, &content, now_ms())
+        .map_err(snippet_store_error)?;
+    events::snippets_changed(&app);
+    Ok(item)
+}
+
+fn load_snippet(app: &AppHandle, id: i64) -> anyhow::Result<ClipContent> {
+    let text = app.state::<Store>().snippet_content(id)?.context("片段不存在或已删除")?;
+    Ok(ClipContent {
+        kind: ClipKind::Text,
+        text: Some(text),
+        html: None,
+        rtf: None,
+        image_file: None,
+    })
+}
+
+#[tauri::command]
+pub async fn paste_snippet(app: AppHandle, id: i64) -> CmdResult<PasteResult> {
+    let content = load_snippet(&app, id).map_err(err)?;
+    tauri::async_runtime::spawn_blocking(move || paste_content_blocking(&app, content, true))
+        .await
+        .map_err(err)?
+        .map_err(err)
+}
+
+#[tauri::command]
+pub async fn copy_snippet(app: AppHandle, id: i64) -> CmdResult<()> {
+    let content = load_snippet(&app, id).map_err(err)?;
+    tauri::async_runtime::spawn_blocking(move || write_clipboard(&app, content, true))
+        .await
+        .map_err(err)?
+        .map_err(err)
 }
 
 /// 设置窗口所需的完整状态：用户设置 + 只能从系统读取的状态。
@@ -403,12 +570,27 @@ mod tests {
 
     #[test]
     fn clip_text_truncates_on_char_boundary() {
-        let short = clip_text_of("你好".into());
+        let short = text_preview_of("你好".into());
         assert_eq!((short.text.as_str(), short.chars, short.truncated), ("你好", 2, false));
 
-        let long = clip_text_of("字".repeat(TEXT_PREVIEW_CHARS + 3));
+        let long = text_preview_of("字".repeat(TEXT_PREVIEW_CHARS + 3));
         assert_eq!(long.chars, TEXT_PREVIEW_CHARS + 3);
         assert!(long.truncated);
         assert_eq!(long.text.chars().count(), TEXT_PREVIEW_CHARS);
+    }
+
+    #[test]
+    fn snippet_titles_come_from_first_line() {
+        assert_eq!(snippet_title("\n  工作邮件  \n正文"), "工作邮件");
+        assert_eq!(snippet_title(&"长".repeat(50)), format!("{}…", "长".repeat(40)));
+        assert_eq!(snippet_title("\n "), "剪贴板片段");
+    }
+
+    #[test]
+    fn snippet_validation_rejects_empty_and_oversized() {
+        assert!(validate_snippet("", "正文", 100).is_err());
+        assert!(validate_snippet("标题", " ", 100).is_err());
+        assert!(validate_snippet("标题", "正文", 2).is_err());
+        assert!(validate_snippet(" 标题 ", "正文", 100).is_ok());
     }
 }

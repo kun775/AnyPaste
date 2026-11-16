@@ -28,6 +28,7 @@ export const icons = {
     14,
     '<rect x="5" y="5" width="8.5" height="8.5" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/>',
   ),
+  snippet: svg(14, '<path d="M4 2.5h8A1.5 1.5 0 0 1 13.5 4v10.5L8 11l-5.5 3.5V4A1.5 1.5 0 0 1 4 2.5z"/><path d="M6 6h4M6 8.5h3"/>'),
   clock: svg(14, '<circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 1.5"/>'),
   pin: svg(14, '<path d="M10 2.5l3.5 3.5-2.5 1-2 2 .5 3-1 1-2.5-2.5L3 13.5M6 8.5L3.5 6l1-1 3 .5 2-2z"/>'),
   pinFill: svg(

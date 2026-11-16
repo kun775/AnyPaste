@@ -1,11 +1,15 @@
 <script lang="ts">
-  import { clipText, type ClipItem, type ClipText } from "../lib/api";
-  import { ago, highlight } from "../lib/format";
+  import { clipText, snippetText, type ClipText } from "../lib/api";
+  import { highlight } from "../lib/format";
 
   interface Props {
-    item: ClipItem;
+    source: "clip" | "snippet";
+    id: number;
+    preview: string;
+    title: string;
+    sub: string;
+    mono?: boolean;
     query: string;
-    now: number;
     onclose: () => void;
     onpaste: () => void;
   }
@@ -13,27 +17,33 @@
   /** 超过该长度不做搜索高亮，避免生成过多节点。 */
   const HIGHLIGHT_MAX = 50_000;
 
-  let { item, query, now, onclose, onpaste }: Props = $props();
+  let { source, id, preview, title, sub, mono = false, query, onclose, onpaste }: Props = $props();
   let full = $state<ClipText | null>(null);
   let error = $state("");
 
   // 先显示列表里的预览文字，全文加载完成后替换
   $effect(() => {
-    const id = item.id;
+    const current = id;
     full = null;
     error = "";
-    clipText(id)
+    let cancelled = false;
+    (source === "snippet" ? snippetText(current) : clipText(current))
       .then((t) => {
-        if (item.id === id) full = t;
+        if (!cancelled && id === current) full = t;
       })
-      .catch((e) => (error = String(e)));
+      .catch((e) => {
+        if (!cancelled) error = String(e);
+      });
+    return () => {
+      cancelled = true;
+    };
   });
 
-  const text = $derived(full?.text ?? item.preview);
+  const text = $derived(full?.text ?? preview);
   const segments = $derived(text.length <= HIGHLIGHT_MAX ? highlight(text, query) : [{ text, hit: false }]);
   const stats = $derived.by(() => {
     if (!full) return "正在加载…";
-    if (item.kind === "files") return `${full.text.split("\n").filter(Boolean).length} 个文件`;
+    if (mono) return `${full.text.split("\n").filter(Boolean).length} 个文件`;
     const lines = full.text.split("\n").length;
     const base = `${full.chars.toLocaleString()} 字符 · ${lines.toLocaleString()} 行`;
     return full.truncated ? `${base}（仅显示开头部分）` : base;
@@ -43,11 +53,11 @@
 <!-- 按键（Esc/空格关闭、Enter 粘贴）由弹窗的全局键盘处理负责 -->
 <div class="preview" role="dialog" aria-modal="true" aria-label="内容预览" tabindex="-1">
   <div class="head">
-    <span class="title">{item.kind === "files" ? "文件列表" : item.rich ? "富文本（纯文本视图）" : "全文"}</span>
-    <span class="sub">{[item.sourceApp, ago(item.lastCopiedAt, now)].filter(Boolean).join(" · ")}</span>
+    <span class="title">{title}</span>
+    <span class="sub">{sub}</span>
   </div>
   <!-- prettier-ignore -->
-  <pre class="content" class:mono={item.kind === "files"}>{#each segments as seg}{#if seg.hit}<mark>{seg.text}</mark>{:else}{seg.text}{/if}{/each}</pre>
+  <pre class="content" class:mono>{#each segments as seg}{#if seg.hit}<mark>{seg.text}</mark>{:else}{seg.text}{/if}{/each}</pre>
   <div class="bar">
     <span class:error={!!error}>{error || stats}</span>
     <button class="btn primary" onclick={onpaste}>粘贴</button>
@@ -72,6 +82,10 @@
     padding: 12px 14px 8px;
   }
   .title {
+    max-width: 55%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     font-size: 13px;
     font-weight: 600;
   }

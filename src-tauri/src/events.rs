@@ -4,6 +4,8 @@ use crate::{settings::Settings, windows::POPUP};
 
 /// 条目新增、更新或删除；弹出列表收到后重新加载。
 pub const CLIPS_CHANGED: &str = "clips-changed";
+/// 常用片段新增、修改或删除。
+pub const SNIPPETS_CHANGED: &str = "snippets-changed";
 /// 弹出列表即将显示；前端重置搜索与选中项。
 pub const POPUP_SHOWN: &str = "popup-shown";
 /// 设置已修改，负载为最新设置；各窗口据此更新主题等。
@@ -15,6 +17,12 @@ pub fn clips_changed(app: &AppHandle) {
     }
     // 永久条目若有变化，防抖后同步到云端（同步服务会比对指纹，无变化时跳过）
     crate::sync::mark_dirty(app);
+}
+
+pub fn snippets_changed(app: &AppHandle) {
+    if let Err(e) = app.emit(SNIPPETS_CHANGED, ()) {
+        log::warn!("发送 {SNIPPETS_CHANGED} 事件失败: {e}");
+    }
 }
 
 pub fn popup_shown(app: &AppHandle) {

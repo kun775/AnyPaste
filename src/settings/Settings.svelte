@@ -22,14 +22,16 @@
   import AboutPane from "./AboutPane.svelte";
   import AppList from "./AppList.svelte";
   import HotkeyInput from "./HotkeyInput.svelte";
+  import SnippetsPane from "./SnippetsPane.svelte";
   import SyncPane from "./SyncPane.svelte";
 
-  type Pane = "general" | "keys" | "storage" | "sync" | "about";
+  type Pane = "general" | "keys" | "storage" | "snippets" | "sync" | "about";
 
   const PANES: { id: Pane; label: string }[] = [
     { id: "general", label: "常规" },
     { id: "keys", label: "快捷键" },
     { id: "storage", label: "存储" },
+    { id: "snippets", label: "片段" },
     { id: "sync", label: "云同步" },
     { id: "about", label: "关于" },
   ];
@@ -294,6 +296,9 @@
         <div class="rt"><b>清空临时历史</b><small>永久条目不受影响</small></div>
         <button class="btn danger" disabled={!stats?.temp} onclick={() => (confirmClear = true)}>清空</button>
       </div>
+    {:else if pane === "snippets"}
+      <h1>片段</h1>
+      <SnippetsPane toast={showToast} />
     {:else if pane === "sync"}
       <h1>云同步</h1>
       <SyncPane toast={showToast} />

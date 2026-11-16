@@ -34,6 +34,23 @@ export interface ClipText {
 export interface Counts {
   temp: number;
   perm: number;
+  snippets: number;
+}
+
+/** 用户保存的常用文本片段；`preview` 只含开头部分。 */
+export interface SnippetItem {
+  id: number;
+  title: string;
+  preview: string;
+  chars: number;
+  updatedAt: number;
+}
+
+/** 编辑片段时读取的完整内容。 */
+export interface SnippetDraft {
+  id: number;
+  title: string;
+  content: string;
 }
 
 export interface Cursor {
@@ -172,6 +189,16 @@ export const clipText = (id: number) => invoke<ClipText>("clip_text", { id });
 export const deleteClip =(id: number) => invoke<void>("delete_clip", { id });
 export const clearTemp = () => invoke<number>("clear_temp");
 
+export const listSnippets = (query: string | null) => invoke<SnippetItem[]>("list_snippets", { query });
+export const getSnippet = (id: number) => invoke<SnippetDraft>("get_snippet", { id });
+export const saveSnippet = (id: number | null, title: string, content: string) =>
+  invoke<SnippetItem>("save_snippet", { id, title, content });
+export const deleteSnippet = (id: number) => invoke<void>("delete_snippet", { id });
+export const saveClipAsSnippet = (id: number) => invoke<SnippetItem>("save_clip_as_snippet", { id });
+export const pasteSnippet = (id: number) => invoke<{ pasted: boolean }>("paste_snippet", { id });
+export const copySnippet = (id: number) => invoke<void>("copy_snippet", { id });
+export const snippetText = (id: number) => invoke<ClipText>("snippet_text", { id });
+
 export const getSettings = () => invoke<SettingsView>("get_settings");
 export const updateSettings = (settings: Settings) => invoke<SettingsView>("update_settings", { settings });
 export const setAutostart = (enabled: boolean) => invoke<SettingsView>("set_autostart", { enabled });
@@ -195,6 +222,7 @@ export const onUpdateStatus = (cb: (s: UpdateStatus) => void): Promise<UnlistenF
   listen<UpdateStatus>("update-status", (e) => cb(e.payload));
 
 export const onClipsChanged = (cb: () => void): Promise<UnlistenFn> => listen("clips-changed", cb);
+export const onSnippetsChanged = (cb: () => void): Promise<UnlistenFn> => listen("snippets-changed", cb);
 export const onPopupShown = (cb: () => void): Promise<UnlistenFn> => listen("popup-shown", cb);
 export const onSettingsChanged = (cb: (s: Settings) => void): Promise<UnlistenFn> =>
   listen<Settings>("settings-changed", (e) => cb(e.payload));

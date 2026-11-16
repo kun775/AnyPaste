@@ -2,7 +2,17 @@
 // 仅在 `import.meta.env.DEV` 下被动态导入，不会进入生产包。
 import { emit } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
-import type { ClipItem, Cursor, KindFilter, Settings, SyncConfig, SyncStatus, Tab, UpdateStatus } from "./api";
+import type {
+  ClipItem,
+  Cursor,
+  KindFilter,
+  Settings,
+  SnippetItem,
+  SyncConfig,
+  SyncStatus,
+  Tab,
+  UpdateStatus,
+} from "./api";
 
 const DEFAULT_SETTINGS: Settings = {
   closeToTray: true,
@@ -116,6 +126,34 @@ export function installMock(window: "popup" | "settings") {
     error: null,
     portable: false,
   };
+  type MockSnippet = SnippetItem & { content: string };
+  const snippetOf = (id: number, title: string, content: string, updatedAt: number): MockSnippet => ({
+    id,
+    title,
+    content,
+    preview: [...content].slice(0, 400).join(""),
+    chars: [...content].length,
+    updatedAt,
+  });
+  let snippets: MockSnippet[] = [
+    snippetOf(
+      1,
+      "工作邮件开头",
+      "你好，\n\n附件是本周的进度报告，请查收。如有问题随时联系。\n\n谢谢！",
+      Date.now() - 2 * HOUR,
+    ),
+    snippetOf(2, "公司地址", "上海市浦东新区示例路 88 号 A 座 12 楼", Date.now() - 26 * HOUR),
+    snippetOf(3, "常用审查命令", "cargo clippy --all-targets -- -D warnings\ncargo test", Date.now() - 3 * 24 * HOUR),
+  ];
+  let nextSnippetId = 100;
+  const snippetItem = (s: MockSnippet): SnippetItem => ({
+    id: s.id,
+    title: s.title,
+    preview: s.preview,
+    chars: s.chars,
+    updatedAt: s.updatedAt,
+  });
+  const emitSnippets = () => emit("snippets-changed");
   const view = () => ({ settings, autostart, winVReleased: settings.takeOverWinV, winVActive });
   let sync: SyncConfig = {
     enabled: false,
@@ -146,6 +184,14 @@ export function installMock(window: "popup" | "settings") {
       .filter((i) => i.permanent === (tab === "perm"))
       .filter((i) => !query || i.preview.toLowerCase().includes(query.toLowerCase()))
       .sort((a, b) => b.lastCopiedAt - a.lastCopiedAt || b.id - a.id);
+  const fullClipText = (item: ClipItem | undefined) => {
+    const preview = item?.preview ?? "";
+    return LONG_TEXT.startsWith(preview) && preview.length === 400 ? LONG_TEXT : preview;
+  };
+  const snippetTitleOf = (text: string) => {
+    const first = text.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? "";
+    return first ? (first.length > 40 ? `${first.slice(0, 40)}…` : first) : "剪贴板片段";
+  };
 
   mockWindows(window);
   mockIPC(
@@ -168,7 +214,7 @@ export function installMock(window: "popup" | "settings") {
           return [...pinned, ...list.slice(0, 100)];
         }
         case "clip_counts":
-          return { temp: visible("temp", null).length, perm: visible("perm", null).length };
+          return { temp: visible("temp", null).length, perm: visible("perm", null).length, snippets: snippets.length };
         case "is_paused":
           return false;
         case "paste_clip":
@@ -188,8 +234,7 @@ export function installMock(window: "popup" | "settings") {
         case "clip_image":
           return FULL;
         case "clip_text": {
-          const preview = items.find((i) => i.id === id)?.preview ?? "";
-          const text = LONG_TEXT.startsWith(preview) && preview.length === 400 ? LONG_TEXT : preview;
+          const text = fullClipText(items.find((i) => i.id === id));
           return { text, chars: [...text].length, truncated: false };
         }
         case "delete_clip":
@@ -200,6 +245,63 @@ export function installMock(window: "popup" | "settings") {
           items = items.filter((i) => i.permanent);
           return n;
         }
+        case "list_snippets": {
+          const q = ((args.query as string | null) ?? "").trim().toLowerCase();
+          return snippets
+            .filter((s) => !q || s.title.toLowerCase().includes(q) || s.content.toLowerCase().includes(q))
+            .sort((a, b) => b.updatedAt - a.updatedAt || b.id - a.id)
+            .map(snippetItem);
+        }
+        case "get_snippet": {
+          const s = snippets.find((item) => item.id === id);
+          if (!s) throw "片段不存在或已删除";
+          return { id: s.id, title: s.title, content: s.content };
+        }
+        case "save_snippet": {
+          const title = (args.title as string).trim();
+          const content = args.content as string;
+          if (!title) throw "片段标题不能为空";
+          if (!content.trim()) throw "片段内容不能为空";
+          const sid = args.id as number | null;
+          let saved: MockSnippet;
+          if (sid) {
+            const index = snippets.findIndex((s) => s.id === sid);
+            if (index < 0) throw "片段不存在或已删除";
+            saved = snippetOf(sid, title, content, Date.now());
+            snippets = snippets.map((s) => (s.id === sid ? saved : s));
+          } else {
+            saved = snippetOf(++nextSnippetId, title, content, Date.now());
+            snippets = [...snippets, saved];
+          }
+          emitSnippets();
+          return snippetItem(saved);
+        }
+        case "delete_snippet": {
+          const count = snippets.length;
+          snippets = snippets.filter((s) => s.id !== id);
+          if (snippets.length === count) throw "片段不存在或已删除";
+          emitSnippets();
+          return null;
+        }
+        case "save_clip_as_snippet": {
+          const clip = items.find((i) => i.id === id);
+          if (!clip) throw "条目不存在或已删除";
+          if (clip.kind !== "text" && clip.kind !== "rich") throw "只有文本条目可以存为片段";
+          const text = fullClipText(clip);
+          const saved = snippetOf(++nextSnippetId, snippetTitleOf(text), text, Date.now());
+          snippets = [...snippets, saved];
+          emitSnippets();
+          return snippetItem(saved);
+        }
+        case "snippet_text": {
+          const s = snippets.find((item) => item.id === id);
+          if (!s) throw "片段不存在或已删除";
+          return { text: s.content, chars: s.chars, truncated: false };
+        }
+        case "paste_snippet":
+          return { pasted: false };
+        case "copy_snippet":
+          return null;
         case "get_settings":
           return view();
         case "update_settings": {
@@ -252,7 +354,7 @@ export function installMock(window: "popup" | "settings") {
           return { temp: visible("temp", null).length, perm: visible("perm", null).length, bytes: 18_400_000 };
         case "app_info":
           return {
-            version: "0.4.1-dev",
+            version: "0.5.0-dev",
             dataDir: "C:\\Users\\me\\AppData\\Roaming\\AnyPaste",
             logDir: "C:\\Users\\me\\AppData\\Roaming\\AnyPaste\\logs",
             repoUrl: "https://github.com/kun775/AnyPaste",
@@ -268,7 +370,11 @@ export function installMock(window: "popup" | "settings") {
             ...update,
             checking: false,
             lastCheckedAt: Date.now(),
-            available: { version: "0.4.1", notes: "- 更新按钮即时反馈\n- 下载进度更清晰\n- 修复若干问题", date: null },
+            available: {
+              version: "0.5.1",
+              notes: "- 常用片段支持搜索、预览与快捷粘贴\n- 更新按钮即时反馈\n- 下载进度更清晰",
+              date: null,
+            },
           };
           emitUpdate();
           return update.available;

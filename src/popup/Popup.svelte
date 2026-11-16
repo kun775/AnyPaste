@@ -5,31 +5,43 @@
     clearTemp,
     clipCounts,
     copyClip,
+    copySnippet,
     deleteClip,
+    deleteSnippet,
     getSettings,
     hidePopup,
     isPaused,
     listClips,
+    listSnippets,
     onClipsChanged,
     onPopupShown,
     onSettingsChanged,
+    onSnippetsChanged,
     openSettings,
     pasteClip,
+    pasteSnippet,
+    saveClipAsSnippet,
     setPermanent,
     setPinned,
     type ClipItem,
     type Counts,
     type KindFilter,
     type Settings,
+    type SnippetItem,
     type Tab,
   } from "../lib/api";
   import ConfirmDialog from "../lib/ConfirmDialog.svelte";
+  import { ago } from "../lib/format";
   import { icons } from "../lib/icons";
   import { applyTheme } from "../lib/theme";
   import ClipRow from "./ClipRow.svelte";
   import ContextMenu, { type MenuEntry } from "./ContextMenu.svelte";
   import ImagePreview from "./ImagePreview.svelte";
+  import SnippetRow from "./SnippetRow.svelte";
   import TextPreview from "./TextPreview.svelte";
+
+  type View = Tab | "snippets";
+  type Row = { kind: "clip"; item: ClipItem } | { kind: "snippet"; item: SnippetItem };
 
   /** 类型筛选项，顺序即 Ctrl+F 的切换顺序。 */
   const FILTERS: { value: KindFilter | null; label: string; icon: string }[] = [
@@ -47,11 +59,14 @@
     run: () => Promise<void>;
   }
 
-  let tab = $state<Tab>("temp");
+  const VIEWS: View[] = ["temp", "perm", "snippets"];
+
+  let tab = $state<View>("temp");
   let filter = $state<KindFilter | null>(null);
   let query = $state("");
   let items = $state<ClipItem[]>([]);
-  let counts = $state<Counts>({ temp: 0, perm: 0 });
+  let snippets = $state<SnippetItem[]>([]);
+  let counts = $state<Counts>({ temp: 0, perm: 0, snippets: 0 });
   let sel = $state(0);
   let hasMore = $state(false);
   let loadingMore = $state(false);
@@ -63,7 +78,7 @@
   let confirm = $state<Confirm | null>(null);
   let toast = $state<{ text: string; error: boolean } | null>(null);
   let plainDefault = $state(false);
-  let preview = $state<ClipItem | null>(null);
+  let preview = $state<Row | null>(null);
 
   let searchEl: HTMLInputElement | undefined = $state();
   let listEl: HTMLUListElement | undefined = $state();
@@ -73,13 +88,23 @@
   /** 重新加载第一页。用请求序号丢弃过期响应，避免快速输入时结果错乱。 */
   async function reload() {
     const seq = ++requestSeq;
+    const current = tab;
     try {
-      const [list, c, p] = await Promise.all([listClips(tab, filter, query, null), clipCounts(), isPaused()]);
+      const countsPromise = clipCounts();
+      const pausedPromise = isPaused();
+      const list = current === "snippets" ? await listSnippets(query.trim() || null) : await listClips(current, filter, query, null);
+      const [c, p] = await Promise.all([countsPromise, pausedPromise]);
       if (seq !== requestSeq) return;
-      items = list;
+      if (current === "snippets") {
+        snippets = list as SnippetItem[];
+        items = [];
+      } else {
+        items = list as ClipItem[];
+        snippets = [];
+      }
       counts = c;
       paused = p;
-      hasMore = list.filter((i) => !i.pinned).length === PAGE_SIZE;
+      hasMore = current !== "snippets" && (list as ClipItem[]).filter((i) => !i.pinned).length === PAGE_SIZE;
       sel = Math.min(sel, Math.max(0, list.length - 1));
       loadError = "";
     } catch (e) {
@@ -90,14 +115,15 @@
   }
 
   async function loadMore() {
-    if (!hasMore || loadingMore || items.length === 0) return;
+    const current = tab;
+    if (current === "snippets" || !hasMore || loadingMore || items.length === 0) return;
     const seq = requestSeq;
     // 游标取最后一条非置顶条目；置顶条目只随第一页返回
     const last = items.findLast((i) => !i.pinned);
     if (!last) return;
     loadingMore = true;
     try {
-      const more = await listClips(tab, filter, query, { lastCopiedAt: last.lastCopiedAt, id: last.id });
+      const more = await listClips(current, filter, query, { lastCopiedAt: last.lastCopiedAt, id: last.id });
       if (seq !== requestSeq) return;
       items = [...items, ...more];
       hasMore = more.length === PAGE_SIZE;
@@ -134,6 +160,7 @@
       .catch(() => {});
     const unlisten = [
       onClipsChanged(reload),
+      onSnippetsChanged(reload),
       onSettingsChanged(applySettings),
       onPopupShown(async () => {
         menu = null;
@@ -154,6 +181,12 @@
     };
   });
 
+  const rows = $derived<Row[]>(
+    tab === "snippets"
+      ? snippets.map((item) => ({ kind: "snippet" as const, item }))
+      : items.map((item) => ({ kind: "clip" as const, item })),
+  );
+  const searchPlaceholder = $derived(tab === "snippets" ? "搜索常用片段" : "搜索剪贴板历史");
   const filterLabel = $derived(filter ? (FILTERS.find((f) => f.value === filter)?.label ?? "") : "");
 
   function showToast(text: string, error = false) {
@@ -174,11 +207,27 @@
   }
 
   /** `alternate` 为 true（Shift+Enter）时使用与默认相反的格式。 */
-  async function paste(item: ClipItem | undefined, alternate = false) {
-    if (!item) return;
+  async function paste(row: Row | undefined, alternate = false) {
+    if (!row) return;
     try {
-      const { pasted } = await pasteClip(item.id, plainDefault !== alternate);
+      const { pasted } =
+        row.kind === "snippet" ? await pasteSnippet(row.item.id) : await pasteClip(row.item.id, plainDefault !== alternate);
       if (!pasted) showToast("已复制到剪贴板");
+    } catch (e) {
+      showToast(String(e), true);
+    }
+  }
+
+  function copy(row: Row | undefined) {
+    if (!row) return;
+    run(() => (row.kind === "snippet" ? copySnippet(row.item.id) : copyClip(row.item.id)), "已复制到剪贴板");
+  }
+
+  async function saveAsSnippet(item: ClipItem | undefined) {
+    if (!item || (item.kind !== "text" && item.kind !== "rich")) return;
+    try {
+      const snippet = await saveClipAsSnippet(item.id);
+      showToast(`已存为片段「${snippet.title}」`);
     } catch (e) {
       showToast(String(e), true);
     }
@@ -200,8 +249,18 @@
     }
   }
 
-  function remove(item: ClipItem | undefined) {
-    if (!item) return;
+  function remove(row: Row | undefined) {
+    if (!row) return;
+    if (row.kind === "snippet") {
+      confirm = {
+        title: "删除片段？",
+        message: `「${row.item.title}」将从常用片段中删除，此操作无法撤销。`,
+        action: "删除",
+        run: () => run(() => deleteSnippet(row.item.id), "已删除片段"),
+      };
+      return;
+    }
+    const item = row.item;
     if (item.permanent) {
       confirm = {
         title: "删除永久条目？",
@@ -224,22 +283,36 @@
     };
   }
 
-  function openMenu(item: ClipItem, x: number, y: number) {
+  function openMenu(row: Row, x: number, y: number) {
+    if (row.kind === "snippet") {
+      menu = {
+        x,
+        y,
+        entries: [
+          { label: "粘贴", icon: icons.paste, shortcut: "Enter", run: () => paste(row) },
+          { label: "查看全文", icon: icons.eye, shortcut: "Space", run: () => (preview = row) },
+          { label: "仅复制", icon: icons.copy, run: () => copy(row) },
+          { label: "删除", icon: icons.trash, shortcut: "Del", danger: true, run: () => remove(row) },
+        ],
+      };
+      return;
+    }
+    const item = row.item;
     const entries: MenuEntry[] = [
-      { label: "粘贴", icon: icons.paste, shortcut: "Enter", run: () => paste(item) },
+      { label: "粘贴", icon: icons.paste, shortcut: "Enter", run: () => paste(row) },
     ];
     entries.push({
       label: isImage(item) ? "预览原图" : "查看全文",
       icon: icons.eye,
       shortcut: "Space",
-      run: () => (preview = item),
+      run: () => (preview = row),
     });
     if (item.rich || item.kind === "files") {
       const label = plainDefault ? "保留格式粘贴" : "以纯文本粘贴";
-      entries.push({ label, icon: icons.plain, shortcut: "Shift+Enter", run: () => paste(item, true) });
+      entries.push({ label, icon: icons.plain, shortcut: "Shift+Enter", run: () => paste(row, true) });
     }
     entries.push(
-      { label: "仅复制", icon: icons.copy, run: () => run(() => copyClip(item.id), "已复制到剪贴板") },
+      { label: "仅复制", icon: icons.copy, run: () => copy(row) },
       {
         label: item.pinned ? "取消置顶" : "置顶",
         icon: icons.pin,
@@ -252,8 +325,16 @@
         shortcut: "Ctrl+P",
         run: () => toggle(item),
       },
-      { label: "删除", icon: icons.trash, shortcut: "Del", danger: true, run: () => remove(item) },
     );
+    if (item.kind === "text" || item.kind === "rich") {
+      entries.push({
+        label: "存为常用片段",
+        icon: icons.snippet,
+        shortcut: "Ctrl+S",
+        run: () => saveAsSnippet(item),
+      });
+    }
+    entries.push({ label: "删除", icon: icons.trash, shortcut: "Del", danger: true, run: () => remove(row) });
     menu = { x, y, entries };
   }
 
@@ -263,11 +344,17 @@
     listEl?.querySelector(".sel")?.scrollIntoView({ block: "nearest" });
   }
 
-  function switchTab(next: Tab) {
+  function switchTab(next: View) {
     if (tab === next) return;
     tab = next;
     sel = 0;
+    loaded = false;
     listEl?.scrollTo({ top: 0 });
+  }
+
+  function cycleTab(step: number) {
+    const i = VIEWS.indexOf(tab);
+    switchTab(VIEWS[(i + step + VIEWS.length) % VIEWS.length]);
   }
 
   function setFilter(next: KindFilter | null) {
@@ -297,9 +384,9 @@
         searchEl?.focus();
       } else if (e.key === "Enter") {
         e.preventDefault();
-        const item = preview;
+        const row = preview;
         preview = null;
-        paste(item);
+        paste(row);
       }
       return;
     }
@@ -311,7 +398,8 @@
       }
       return;
     }
-    const item = items[sel];
+    const row = rows[sel];
+    const clip = row?.kind === "clip" ? row.item : undefined;
     const inSearch = e.target === searchEl;
     const ctrl = e.ctrlKey || e.metaKey;
 
@@ -326,10 +414,10 @@
       select(sel + (e.key === "PageDown" ? 8 : -8));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      paste(item, e.shiftKey);
+      paste(row, e.shiftKey);
     } else if (e.key === "Tab") {
       e.preventDefault();
-      switchTab(tab === "temp" ? "perm" : "temp");
+      cycleTab(e.shiftKey ? -1 : 1);
     } else if (e.key === "Escape") {
       e.preventDefault();
       if (query) query = "";
@@ -337,23 +425,26 @@
     } else if (e.key === " " && !query) {
       // 搜索框为空时空格用于预览；已有搜索词时空格正常输入
       e.preventDefault();
-      if (item) preview = item;
+      if (row) preview = row;
     } else if (ctrl && e.key.toLowerCase() === "f") {
       e.preventDefault();
-      cycleFilter(e.shiftKey ? -1 : 1);
+      if (tab !== "snippets") cycleFilter(e.shiftKey ? -1 : 1);
+    } else if (ctrl && e.key.toLowerCase() === "s") {
+      e.preventDefault();
+      if (clip) saveAsSnippet(clip);
     } else if (ctrl && e.key.toLowerCase() === "p") {
       e.preventDefault();
-      toggle(item);
+      if (clip) toggle(clip);
     } else if (ctrl && e.key.toLowerCase() === "t") {
       e.preventDefault();
-      togglePin(item);
+      if (clip) togglePin(clip);
     } else if (ctrl && /^[1-9]$/.test(e.key)) {
       e.preventDefault();
-      paste(items[Number(e.key) - 1]);
+      paste(rows[Number(e.key) - 1]);
     } else if (e.key === "Delete" && !(inSearch && query)) {
       // 搜索框有内容时 Delete 用于编辑文字
       e.preventDefault();
-      remove(item);
+      remove(row);
     } else if (!inSearch && e.key.length === 1 && !ctrl && !e.altKey) {
       searchEl?.focus();
     }
@@ -371,7 +462,7 @@
   <header class="head" data-tauri-drag-region>
     <label class="search">
       {@html icons.search}
-      <input bind:this={searchEl} bind:value={query} placeholder="搜索剪贴板历史" autocomplete="off" spellcheck="false" />
+      <input bind:this={searchEl} bind:value={query} placeholder={searchPlaceholder} autocomplete="off" spellcheck="false" />
     </label>
     <button class="icon-btn" title="设置" onclick={openSettings}>{@html icons.gear}</button>
   </header>
@@ -383,44 +474,77 @@
     <button class="tab" class:active={tab === "perm"} role="tab" aria-selected={tab === "perm"} onclick={() => switchTab("perm")}>
       永久 <span class="count">{counts.perm}</span>
     </button>
-    <div class="filters" role="group" aria-label="按类型筛选">
-      {#each FILTERS as f (f.label)}
-        <button
-          class="filter"
-          class:active={filter === f.value}
-          aria-pressed={filter === f.value}
-          aria-label={f.label}
-          title="{f.label}（Ctrl+F 切换）"
-          onclick={() => setFilter(f.value)}
-        >
-          {@html f.icon}
-        </button>
-      {/each}
-    </div>
+    <button
+      class="tab snippet-tab"
+      class:active={tab === "snippets"}
+      role="tab"
+      aria-selected={tab === "snippets"}
+      onclick={() => switchTab("snippets")}
+    >
+      片段 <span class="count">{counts.snippets}</span>
+    </button>
+    {#if tab !== "snippets"}
+      <div class="filters" role="group" aria-label="按类型筛选">
+        {#each FILTERS as f (f.label)}
+          <button
+            class="filter"
+            class:active={filter === f.value}
+            aria-pressed={filter === f.value}
+            aria-label={f.label}
+            title="{f.label}（Ctrl+F 切换）"
+            onclick={() => setFilter(f.value)}
+          >
+            {@html f.icon}
+          </button>
+        {/each}
+      </div>
+    {/if}
     {#if tab === "temp" && counts.temp > 0}
       <button class="clear" title="清空临时记录" aria-label="清空临时记录" onclick={askClearTemp}>{@html icons.trash}</button>
     {/if}
   </div>
 
-  {#if items.length > 0}
-    <ul class="list" role="listbox" aria-label="剪贴板条目" bind:this={listEl} onscroll={onScroll}>
-      {#each items as item, i (item.id)}
-        <ClipRow
-          {item}
-          index={i}
-          selected={i === sel}
-          {now}
-          {query}
-          onselect={() => (sel = i)}
-          onpaste={() => paste(item)}
-          ontoggle={() => toggle(item)}
-          onpin={() => togglePin(item)}
-          onpreview={() => (preview = item)}
-          ondelete={() => remove(item)}
-          onmenu={(x, y) => openMenu(item, x, y)}
-        />
+  {#if rows.length > 0}
+    <ul
+      class="list"
+      role="listbox"
+      aria-label={tab === "snippets" ? "常用片段" : "剪贴板条目"}
+      bind:this={listEl}
+      onscroll={onScroll}
+    >
+      {#each rows as row, i (`${row.kind}-${row.item.id}`)}
+        {#if row.kind === "clip"}
+          <ClipRow
+            item={row.item}
+            index={i}
+            selected={i === sel}
+            {now}
+            {query}
+            onselect={() => (sel = i)}
+            onpaste={() => paste(row)}
+            ontoggle={() => toggle(row.item)}
+            onpin={() => togglePin(row.item)}
+            onpreview={() => (preview = row)}
+            ondelete={() => remove(row)}
+            onmenu={(x, y) => openMenu(row, x, y)}
+          />
+        {:else}
+          <SnippetRow
+            item={row.item}
+            index={i}
+            selected={i === sel}
+            {now}
+            {query}
+            onselect={() => (sel = i)}
+            onpaste={() => paste(row)}
+            onpreview={() => (preview = row)}
+            oncopy={() => copy(row)}
+            ondelete={() => remove(row)}
+            onmenu={(x, y) => openMenu(row, x, y)}
+          />
+        {/if}
       {/each}
-      {#if loadingMore}<li class="more">正在加载…</li>{/if}
+      {#if loadingMore && tab !== "snippets"}<li class="more">正在加载…</li>{/if}
     </ul>
   {:else}
     <section class="empty">
@@ -429,6 +553,12 @@
         <p>{loadError}</p>
       {:else if !loaded}
         <p>正在加载…</p>
+      {:else if tab === "snippets" && query.trim()}
+        <h3>没有匹配的片段</h3>
+        <p>没有找到包含“{query.trim()}”的常用片段</p>
+      {:else if tab === "snippets"}
+        <h3>还没有常用片段</h3>
+        <p>在文本条目上按 <kbd>Ctrl+S</kbd> 保存，<br />或到 设置 → 片段 中新建</p>
       {:else if query.trim()}
         <h3>没有匹配的记录</h3>
         <p>
@@ -456,24 +586,52 @@
     <span><kbd>↑↓</kbd> 选择</span>
     <span><kbd>Enter</kbd> 粘贴</span>
     <span><kbd>Space</kbd> 预览</span>
-    <span><kbd>Ctrl+P</kbd> 永久</span>
+    {#if tab !== "snippets"}
+      <span><kbd>Ctrl+P</kbd> 永久</span>
+      <span><kbd>Ctrl+S</kbd> 存片段</span>
+    {/if}
+    <span><kbd>Tab</kbd> 切换</span>
     <span><kbd>Del</kbd> 删除</span>
   </footer>
 
   {#if preview}
-    {@const item = preview}
+    {@const row = preview}
     {@const close = () => {
       preview = null;
       searchEl?.focus();
     }}
     {@const pasteIt = () => {
       preview = null;
-      paste(item);
+      paste(row);
     }}
-    {#if isImage(item)}
-      <ImagePreview {item} onclose={close} onpaste={pasteIt} />
+    {#if row.kind === "clip"}
+      {@const item = row.item}
+      {#if isImage(item)}
+        <ImagePreview {item} onclose={close} onpaste={pasteIt} />
+      {:else}
+        <TextPreview
+          source="clip"
+          id={item.id}
+          preview={item.preview}
+          title={item.kind === "files" ? "文件列表" : item.rich ? "富文本（纯文本视图）" : "全文"}
+          sub={[item.sourceApp, ago(item.lastCopiedAt, now)].filter(Boolean).join(" · ")}
+          mono={item.kind === "files"}
+          {query}
+          onclose={close}
+          onpaste={pasteIt}
+        />
+      {/if}
     {:else}
-      <TextPreview {item} {query} {now} onclose={close} onpaste={pasteIt} />
+      <TextPreview
+        source="snippet"
+        id={row.item.id}
+        preview={row.item.preview}
+        title={row.item.title}
+        sub={`常用片段 · 更新于 ${ago(row.item.updatedAt, now)}`}
+        {query}
+        onclose={close}
+        onpaste={pasteIt}
+      />
     {/if}
   {/if}
 
@@ -574,19 +732,21 @@
   .tabs {
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 2px 10px 0;
+    gap: 2px;
+    padding: 2px 6px 0;
     border-bottom: 1px solid var(--line);
   }
   .tab {
     position: relative;
     display: flex;
+    flex: none;
     align-items: center;
-    gap: 6px;
-    padding: 8px 12px 10px;
+    gap: 4px;
+    padding: 8px 6px 10px;
     border: 0;
     background: transparent;
-    font-size: 13px;
+    font-size: 12.5px;
+    white-space: nowrap;
     color: var(--ink-2);
   }
   .tab.active {
@@ -596,35 +756,43 @@
   .tab.active::after {
     content: "";
     position: absolute;
-    left: 12px;
-    right: 12px;
+    left: 6px;
+    right: 6px;
     bottom: -1px;
     height: 3px;
     border-radius: 3px;
     background: var(--accent);
   }
+  .tab.snippet-tab.active::after {
+    background: var(--snippet);
+  }
+  .tab.snippet-tab .count {
+    background: var(--snippet-soft);
+    color: var(--snippet);
+  }
   .count {
-    min-width: 18px;
-    height: 18px;
-    padding: 0 5px;
-    border-radius: 9px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: 8px;
     display: inline-grid;
     place-items: center;
-    font-size: 11px;
+    font-size: 10.5px;
     font-weight: 500;
     background: var(--line);
     color: var(--ink-2);
   }
   .filters {
+    flex: none;
     margin-left: auto;
     display: flex;
-    gap: 1px;
-    padding: 2px;
+    gap: 0;
+    padding: 1px;
     border-radius: 6px;
     background: var(--line);
   }
   .filter {
-    width: 26px;
+    width: 23px;
     height: 22px;
     border: 0;
     border-radius: 4px;

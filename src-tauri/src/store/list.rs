@@ -72,6 +72,7 @@ pub struct ClipItem {
 pub struct Counts {
     pub temp: usize,
     pub perm: usize,
+    pub snippets: usize,
 }
 
 fn thumb_data_url<S: Serializer>(thumb: &Option<Vec<u8>>, s: S) -> Result<S::Ok, S::Error> {
@@ -190,7 +191,8 @@ impl Store {
 
     pub fn counts(&self, now: i64) -> rusqlite::Result<Counts> {
         let sql = format!(
-            "SELECT COALESCE(SUM(is_permanent = 0), 0), COALESCE(SUM(is_permanent = 1), 0)
+            "SELECT COALESCE(SUM(is_permanent = 0), 0), COALESCE(SUM(is_permanent = 1), 0),
+                    (SELECT COUNT(*) FROM snippets)
              FROM clips WHERE {}",
             visible("?1")
         );
@@ -198,12 +200,13 @@ impl Store {
             Ok(Counts {
                 temp: r.get::<_, i64>(0)? as usize,
                 perm: r.get::<_, i64>(1)? as usize,
+                snippets: r.get::<_, i64>(2)? as usize,
             })
         })
     }
 }
 
-fn escape_like(s: &str) -> String {
+pub(super) fn escape_like(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         if matches!(c, '%' | '_' | '\\') {
@@ -240,7 +243,7 @@ mod tests {
         // a 在 1000 过期，b 在 1010，c 在 1020
         let items = store.list_clips(false, None, None, 1005).unwrap();
         assert_eq!(ids(&items), vec![id[2], id[1]]);
-        assert_eq!(store.counts(1005).unwrap(), Counts { temp: 2, perm: 0 });
+        assert_eq!(store.counts(1005).unwrap(), Counts { temp: 2, perm: 0, snippets: 0 });
     }
 
     #[test]
@@ -253,7 +256,7 @@ mod tests {
         assert_eq!(ids(&perm), vec![id[1]]);
         assert!(perm[0].permanent && perm[0].expires_at.is_none());
         // 永久条目不会过期
-        assert_eq!(store.counts(1_000_000).unwrap(), Counts { temp: 0, perm: 1 });
+        assert_eq!(store.counts(1_000_000).unwrap(), Counts { temp: 0, perm: 1, snippets: 0 });
     }
 
     #[test]
