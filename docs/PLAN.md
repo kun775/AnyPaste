@@ -133,7 +133,7 @@ CREATE TABLE sync_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);  -- 上次�
 
 - 迁移脚本位于 `src-tauri/src/store/migrations/`，版本号记录在 `PRAGMA user_version`。
 - 中文搜索用 FTS5 `trigram` 分词，少于 3 个字符时退化为 `LIKE`。
-- 普通条目默认按 `paste_count` 从高到低排序（次数相同按 `last_copied_at`），置顶条目作为独立队列始终排在最前；可在设置中关闭，改回按最近复制时间排序。
+- 临时条目始终按 `last_copied_at` 排序，避免刚复制的内容沉底；永久条目与常用片段默认按 `paste_count` 从高到低排序（次数相同按时间），置顶条目作为独立队列始终排在最前；可在设置中关闭频率排序。
 - 单条内容上限默认 10 MB（可配置），超出则不记录并写日志。
 - 采集相关设置项：`temp_ttl_secs`（默认 86400）、`temp_max_items`（默认 500，0 为不限）、`max_item_bytes`（默认 10 MB）。
 

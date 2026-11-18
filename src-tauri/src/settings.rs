@@ -42,7 +42,7 @@ pub struct Settings {
     pub paused: bool,
     pub theme: Theme,
     pub popup_position: PopupPosition,
-    /// 按实际粘贴次数从高到低排列普通条目（置顶条目始终单独排在最前）；关闭后按最近复制时间排列。
+    /// 在「永久」与「片段」中按实际粘贴次数从高到低排列（置顶条目始终单独排在最前）；「临时」始终按最近复制时间排列。
     pub sort_by_frequency: bool,
     /// 回车默认以纯文本粘贴（Shift+Enter 反之）。
     pub plain_paste_default: bool,

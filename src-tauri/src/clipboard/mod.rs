@@ -154,6 +154,7 @@ mod monitor {
                 loop {
                     match monitor.recv() {
                         Ok(true) => {
+                            let fg_at_event = source::foreground_app();
                             thread::sleep(COALESCE);
                             while matches!(monitor.try_recv(), Ok(true)) {}
                             // 合并后剪贴板序列号仍未变化（重复通知），无需再读
@@ -162,7 +163,7 @@ mod monitor {
                                 continue;
                             }
                             last_seq = seq;
-                            if let Err(e) = on_update(&app) {
+                            if let Err(e) = on_update(&app, fg_at_event) {
                                 log::warn!("记录剪贴板失败: {e:#}");
                             }
                         }
@@ -176,14 +177,14 @@ mod monitor {
         }
     }
 
-    fn on_update(app: &AppHandle) -> anyhow::Result<()> {
+    fn on_update(app: &AppHandle, fg_at_event: Option<String>) -> anyhow::Result<()> {
         let state = app.state::<AppState>();
         // 永久复制是用户的明确操作，暂停记录时也照常保存
         if state.is_paused() && !state.permanent_armed() {
             return Ok(());
         }
-        // 在读取前取前台进程，尽量贴近触发复制的程序
-        let source_app = source::foreground_app();
+        // 优先取剪贴板拥有者窗口所属进程，取不到时回退到通知到达瞬间的系统前台窗口进程
+        let source_app = source::clipboard_source_app(fg_at_event);
         let prefs = app.state::<SettingsState>().get().clone();
         let armed = state.permanent_armed();
         // 忽略列表与内容类型只约束自动记录；永久复制是明确操作，不受限制

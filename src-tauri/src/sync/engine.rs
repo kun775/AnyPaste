@@ -204,17 +204,25 @@ impl Sync<'_> {
             let id = self.id(&entry.content_hash);
             let item = remote.remove(&id).unwrap_or_default();
             let latest = item.latest().map(|(v, d, p)| (v, d, p.to_string()));
-            let local_newer = latest.as_ref().is_none_or(|(v, _, _)| entry.version > *v);
-            let remote_newer = latest.as_ref().is_some_and(|(v, _, _)| *v > entry.version);
+            let local_key = (entry.version, matches!(entry.state, LocalState::Deleted));
+            let local_newer = latest.as_ref().is_none_or(|(v, d, _)| local_key > (*v, *d));
+            let remote_newer = latest.as_ref().is_some_and(|(v, d, _)| (*v, *d) > local_key);
 
             let mut written = None;
             match entry.state {
+                // 纯本机临时条目从不向云端上传删除；云端存在同内容永久条目时合并升级为永久
+                LocalState::TempOnly => {
+                    if let Some((version, false, path)) = &latest {
+                        self.download(path, &id, *version).await?;
+                        report.downloaded += 1;
+                    }
+                }
                 LocalState::Live if local_newer => {
                     written = Some(self.upload_record(&id, &entry.content_hash).await?);
                     report.uploaded += 1;
                 }
-                // 本地已删除，或已转为临时：云端仍有内容时上传删除标记
-                LocalState::Deleted | LocalState::Local if local_newer => {
+                // 本地已删除，或已主动从永久转为临时：云端仍有内容时上传删除标记
+                LocalState::Deleted if local_newer => {
                     if latest.as_ref().is_some_and(|(_, del, _)| !del) {
                         written = Some(self.upload_tombstone(&id, entry.version).await?);
                         report.uploaded += 1;
@@ -223,13 +231,11 @@ impl Sync<'_> {
                 _ if remote_newer => {
                     let (version, del, path) = latest.as_ref().expect("remote_newer 意味着云端存在版本");
                     if *del {
-                        if entry.state != LocalState::Local {
-                            let d = self.store.apply_remote_delete(&entry.content_hash)?;
-                            report.deleted += d.rows;
-                            removed_images.extend(d.image_files);
-                        }
+                        let d = self.store.apply_remote_delete(&entry.content_hash)?;
+                        report.deleted += d.rows;
+                        removed_images.extend(d.image_files);
                     } else {
-                        self.download(path, *version).await?;
+                        self.download(path, &id, *version).await?;
                         report.downloaded += 1;
                     }
                 }
@@ -239,9 +245,9 @@ impl Sync<'_> {
         }
 
         // 仅云端存在的条目：本机没有过，下载有效内容；删除标记无需处理
-        for item in remote.values() {
+        for (id, item) in &remote {
             if let Some((version, false, path)) = item.latest() {
-                self.download(path, version).await?;
+                self.download(path, id, version).await?;
                 report.downloaded += 1;
             }
             self.cleanup(item, None).await?;
@@ -295,11 +301,14 @@ impl Sync<'_> {
         Ok(())
     }
 
-    /// `version` 取自对象名。对象名不受加密保护，须与内容中的版本一致，
-    /// 否则云端把旧版本改名为新版本号即可让各设备回退，并在每轮同步中反复下载。
-    async fn download(&self, path: &str, version: i64) -> anyhow::Result<()> {
+    /// `id`、`version` 取自对象名。对象名不受加密保护，须与解密后的记录标识和版本一致，
+    /// 防止云端改名回滚旧版本或把其他条目的密文替换到当前条目名下。
+    async fn download(&self, path: &str, id: &str, version: i64) -> anyhow::Result<()> {
         let data = self.op.read(path).await.with_context(|| format!("下载 {path} 失败"))?.to_vec();
         let rec: ClipRecord = serde_json::from_slice(&self.open(data)?).with_context(|| format!("{path} 内容无效"))?;
+        if self.id(&rec.content_hash) != id {
+            bail!("{path} 的标识与内容不一致");
+        }
         if rec.updated_at != version {
             bail!("{path} 的版本与内容不一致");
         }
@@ -606,5 +615,58 @@ mod tests {
         a.sync(&op, None, 100).await.unwrap();
         assert_eq!(inspect(&op).await.unwrap(), RemoteState::Plain);
         assert!(a.sync(&op, Some("pw"), 100).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn ordinary_temp_copy_does_not_delete_remote_permanent() {
+        let op = memory();
+        let (a, b) = (Device::new(), Device::new());
+        perm(&a.store, "important-key", 100);
+        a.sync(&op, None, 150).await.unwrap();
+
+        // 设备 B 在拉取前碰巧普通复制了相同文本（时间戳 200 > 100）
+        b.store.upsert_clip(&text_clip("important-key"), 200, TTL).unwrap();
+        let report = b.sync(&op, None, 250).await.unwrap();
+        assert_eq!(report, Report { uploaded: 0, downloaded: 1, deleted: 0 });
+        assert_eq!(b.perm_texts(), vec!["important-key"]);
+
+        // 设备 A 再次同步，永久条目完好无损
+        assert_eq!(a.sync(&op, None, 300).await.unwrap(), Report::default());
+        assert_eq!(a.perm_texts(), vec!["important-key"]);
+    }
+
+    #[tokio::test]
+    async fn demote_then_clear_temp_still_propagates_deletion() {
+        let op = memory();
+        let (a, b) = (Device::new(), Device::new());
+        perm(&a.store, "demote-and-clear", 10);
+        a.sync(&op, None, 100).await.unwrap();
+        b.sync(&op, None, 100).await.unwrap();
+
+        // 转为临时后在同步前立即清空临时记录，仍应向云端传播删除，且不会从云端误拉回
+        a.store.set_permanent(a.id_of("demote-and-clear"), false, 200, TTL).unwrap();
+        a.store.clear_temp().unwrap();
+        assert_eq!(a.sync(&op, None, 300).await.unwrap(), Report { uploaded: 1, ..Default::default() });
+        assert!(a.perm_texts().is_empty());
+
+        assert_eq!(b.sync(&op, None, 300).await.unwrap().deleted, 1);
+        assert!(b.perm_texts().is_empty());
+    }
+
+    #[tokio::test]
+    async fn rejects_swapped_object_id() {
+        let op = memory();
+        let (a, b) = (Device::new(), Device::new());
+        perm(&a.store, "victim", 10);
+        a.sync(&op, Some("pw"), 100).await.unwrap();
+
+        let name = remote_names(&op).await.remove(0);
+        let (_, version, _) = parse_name(&name).unwrap();
+        let body = op.read(&format!("{CLIPS}{name}")).await.unwrap().to_vec();
+        op.write(&format!("{CLIPS}forged_id.{version}.rec"), body).await.unwrap();
+        op.delete(&format!("{CLIPS}{name}")).await.unwrap();
+
+        assert!(b.sync(&op, Some("pw"), 100).await.unwrap_err().to_string().contains("标识与内容不一致"));
+        assert!(b.perm_texts().is_empty());
     }
 }

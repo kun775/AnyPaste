@@ -40,14 +40,21 @@ jobs:
 
       - name: Check version matches tag
         run: |
-          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
-          if ("v$version" -ne $env:TAG) { throw "标签 $env:TAG 与 tauri.conf.json 中的版本号 $version 不一致" }
-          "VERSION=$version" >> $env:GITHUB_ENV
+          $tauriVer = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $npmVer = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $cargoVer = (Select-String -Path src-tauri/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches.Groups[1].Value
+          if ($tauriVer -ne $npmVer -or $tauriVer -ne $cargoVer) {
+            throw "版本号不一致：tauri.conf.json=$tauriVer, package.json=$npmVer, Cargo.toml=$cargoVer"
+          }
+          if ("v$tauriVer" -ne $env:TAG) { throw "标签 $env:TAG 与代码中的版本号 $tauriVer 不一致" }
+          "VERSION=$tauriVer" >> $env:GITHUB_ENV
 
       - run: npm ci
+      - run: npm run check
+      - run: npm run build
 
       # Cargo.lock 与 Cargo.toml 不一致时失败，避免发布构建悄悄解析出未经测试的依赖版本
-      - run: cargo fetch --locked
+      - run: cargo test --locked
         working-directory: src-tauri
 
       - name: Build signed installer
@@ -98,8 +105,9 @@ jobs:
           gh @ghArgs
           if ($LASTEXITCODE -ne 0) { throw "创建 Release 失败" }
 
-      # 清单放在固定标签 updater 的发布中：releases/latest 会跳过预发布版，固定地址则不受影响
+      # 仅正式版更新固定标签 updater 的清单，避免预发布版（含 "-"）覆盖稳定更新通道
       - name: Publish update manifest
+        if: ${{ !contains(github.ref_name, '-') }}
         run: |
           gh release view updater *> $null
           if ($LASTEXITCODE -ne 0) {

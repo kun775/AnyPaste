@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use rusqlite::{params, Params, Statement};
+use rusqlite::{params, Connection, Params};
 
 use super::Store;
 
@@ -99,6 +99,11 @@ impl Store {
                expires_at = CASE WHEN excluded.is_permanent = 1
                                    OR (clips.deleted_at IS NULL AND clips.is_permanent = 1)
                                  THEN NULL ELSE excluded.expires_at END,
+               perm_removed_at = CASE WHEN excluded.is_permanent = 1
+                                        OR (clips.deleted_at IS NULL AND clips.is_permanent = 1)
+                                      THEN NULL
+                                      WHEN clips.deleted_at IS NOT NULL THEN clips.deleted_at
+                                      ELSE clips.perm_removed_at END,
                last_copied_at = excluded.last_copied_at,
                updated_at = excluded.updated_at,
                deleted_at = NULL
@@ -128,23 +133,26 @@ impl Store {
 
     /// 删除已过期的临时条目。
     pub fn purge_expired(&self, now: i64) -> rusqlite::Result<Deleted> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "DELETE FROM clips WHERE is_permanent = 0 AND expires_at <= ?1 RETURNING image_file",
-        )?;
-        deleted(&mut stmt, params![now])
+        let mut conn = self.conn();
+        remove_clips(
+            &mut conn,
+            "SELECT id, image_file, perm_removed_at FROM clips
+             WHERE is_permanent = 0 AND deleted_at IS NULL AND expires_at <= ?1",
+            params![now],
+        )
     }
 
-    /// 只保留最近复制的 `keep` 条临时条目。
+    /// 只保留最近复制的 `keep` 条临时条目；已置顶的临时条目优先保留。
     pub fn trim_temp(&self, keep: usize) -> rusqlite::Result<Deleted> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "DELETE FROM clips WHERE id IN (
-               SELECT id FROM clips WHERE is_permanent = 0
-               ORDER BY last_copied_at DESC, id DESC LIMIT -1 OFFSET ?1
-             ) RETURNING image_file",
-        )?;
-        deleted(&mut stmt, params![keep as i64])
+        let mut conn = self.conn();
+        remove_clips(
+            &mut conn,
+            "SELECT id, image_file, perm_removed_at FROM clips WHERE id IN (
+               SELECT id FROM clips WHERE is_permanent = 0 AND deleted_at IS NULL
+               ORDER BY pinned_at IS NOT NULL DESC, last_copied_at DESC, id DESC LIMIT -1 OFFSET ?1
+             )",
+            params![keep as i64],
+        )
     }
 
     pub fn clip_content(&self, id: i64) -> rusqlite::Result<Option<ClipContent>> {
@@ -171,11 +179,17 @@ impl Store {
         }
     }
 
-    /// 设为永久（不再过期），或转为临时（从现在起重新计时）。返回条目是否存在。
+    /// 设为永久（不再过期），或转为临时（从现在起重新计时，并记录脱离永久集合的时间供云同步传播删除）。
     pub fn set_permanent(&self, id: i64, permanent: bool, now: i64, ttl_ms: i64) -> rusqlite::Result<bool> {
         let expires = (!permanent).then(|| now.saturating_add(ttl_ms));
         let n = self.conn().execute(
-            "UPDATE clips SET is_permanent = ?2, expires_at = ?3, updated_at = ?4
+            "UPDATE clips SET
+               is_permanent = ?2,
+               expires_at = ?3,
+               updated_at = ?4,
+               perm_removed_at = CASE WHEN ?2 = 1 THEN NULL
+                                      WHEN is_permanent = 1 THEN ?4
+                                      ELSE perm_removed_at END
              WHERE id = ?1 AND deleted_at IS NULL",
             params![id, permanent, expires, now],
         )?;
@@ -216,33 +230,78 @@ impl Store {
     }
 
     pub fn delete_clip(&self, id: i64) -> rusqlite::Result<Deleted> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare("DELETE FROM clips WHERE id = ?1 RETURNING image_file")?;
-        deleted(&mut stmt, params![id])
+        let mut conn = self.conn();
+        remove_clips(
+            &mut conn,
+            "SELECT id, image_file, perm_removed_at FROM clips WHERE id = ?1 AND deleted_at IS NULL",
+            params![id],
+        )
     }
 
     pub fn clear_temp(&self) -> rusqlite::Result<Deleted> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare("DELETE FROM clips WHERE is_permanent = 0 RETURNING image_file")?;
-        deleted(&mut stmt, [])
+        let mut conn = self.conn();
+        remove_clips(
+            &mut conn,
+            "SELECT id, image_file, perm_removed_at FROM clips WHERE is_permanent = 0 AND deleted_at IS NULL",
+            [],
+        )
     }
 
     /// 所有仍被引用的图片文件名，用于清理孤立文件。
     pub fn image_files(&self) -> rusqlite::Result<HashSet<String>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare("SELECT image_file FROM clips WHERE image_file IS NOT NULL")?;
+        let mut stmt = conn.prepare("SELECT image_file FROM clips WHERE image_file IS NOT NULL AND deleted_at IS NULL")?;
         let rows = stmt.query_map([], |r| r.get(0))?;
         rows.collect()
     }
 }
 
-/// DELETE ... RETURNING image_file 每删除一行返回一行，据此同时得到行数和图片文件。
-fn deleted(stmt: &mut Statement<'_>, params: impl Params) -> rusqlite::Result<Deleted> {
-    let rows = stmt.query_map(params, |r| r.get::<_, Option<String>>(0))?;
-    let mut out = Deleted::default();
-    for row in rows {
-        out.rows += 1;
-        out.image_files.extend(row?);
+/// 删除匹配的条目：曾是永久条目的临时行（`perm_removed_at` 非空）转为墓碑以防止云端旧版本回灌，
+/// 其余直接删除；最后过滤掉仍被其他存活条目共享引用的图片文件。
+fn remove_clips(conn: &mut Connection, select_sql: &str, params: impl Params) -> rusqlite::Result<Deleted> {
+    let tx = conn.transaction()?;
+    let targets: Vec<(i64, Option<String>, Option<i64>)> = {
+        let mut stmt = tx.prepare(select_sql)?;
+        let rows = stmt.query_map(params, |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    let mut candidates = Vec::new();
+    for (id, image, perm_removed_at) in &targets {
+        if let Some(at) = perm_removed_at {
+            tx.execute(
+                "UPDATE clips SET is_permanent = 0, deleted_at = ?2, updated_at = max(updated_at, ?2),
+                   perm_removed_at = NULL, text = NULL, html = NULL, rtf = NULL,
+                   image_file = NULL, thumb = NULL, pinned_at = NULL
+                 WHERE id = ?1",
+                params![id, at],
+            )?;
+        } else {
+            tx.execute("DELETE FROM clips WHERE id = ?1", [id])?;
+        }
+        if let Some(f) = image {
+            candidates.push(f.clone());
+        }
+    }
+    let image_files = unreferenced_images(&tx, candidates)?;
+    tx.commit()?;
+    Ok(Deleted { rows: targets.len(), image_files })
+}
+
+/// 只保留不再被任何未删除条目引用的图片文件名（图片条目与图片文件预览可共享同一像素哈希文件）。
+pub(super) fn unreferenced_images(
+    conn: &Connection,
+    candidates: impl IntoIterator<Item = String>,
+) -> rusqlite::Result<Vec<String>> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    let mut stmt = conn.prepare("SELECT EXISTS(SELECT 1 FROM clips WHERE image_file = ?1 AND deleted_at IS NULL)")?;
+    for file in candidates {
+        if seen.insert(file.clone()) {
+            let still_used: bool = stmt.query_row([&file], |r| r.get(0))?;
+            if !still_used {
+                out.push(file);
+            }
+        }
     }
     Ok(out)
 }
@@ -451,5 +510,44 @@ pub(crate) mod tests {
         store.upsert_clip(&c, 0, TTL).unwrap();
         store.upsert_clip(&text_clip("plain"), 0, TTL).unwrap();
         assert_eq!(store.image_files().unwrap(), HashSet::from(["x.png".to_string()]));
+    }
+
+    #[test]
+    fn shared_image_file_stays_until_last_reference_removed() {
+        let store = Store::open_in_memory().unwrap();
+        let mut perm_img = text_clip("image-item");
+        perm_img.kind = ClipKind::Image;
+        perm_img.image_file = Some("shared.png".into());
+        perm_img.permanent = true;
+        let perm_id = store.upsert_clip(&perm_img, 10, TTL).unwrap().id;
+
+        let mut file_img = text_clip("C:\\temp\\wechat.jpg");
+        file_img.kind = ClipKind::Files;
+        file_img.image_file = Some("shared.png".into());
+        store.upsert_clip(&file_img, 20, TTL).unwrap();
+
+        // 临时图片文件被清空时，永久图片条目仍在引用 shared.png，不能删除文件
+        assert_eq!(store.clear_temp().unwrap(), Deleted { rows: 1, image_files: vec![] });
+        assert!(store.image_files().unwrap().contains("shared.png"));
+
+        // 最后一个引用被删除后才返回文件名以清理磁盘文件
+        assert_eq!(
+            store.delete_clip(perm_id).unwrap(),
+            Deleted { rows: 1, image_files: vec!["shared.png".into()] }
+        );
+    }
+
+    #[test]
+    fn trim_preserves_pinned_temp_items() {
+        let store = Store::open_in_memory().unwrap();
+        let pinned_old = store.upsert_clip(&text_clip("pinned-old"), 1, TTL).unwrap().id;
+        store.set_pinned(pinned_old, true, 2).unwrap();
+        let unpinned_mid = store.upsert_clip(&text_clip("unpinned-mid"), 10, TTL).unwrap().id;
+        let unpinned_new = store.upsert_clip(&text_clip("unpinned-new"), 20, TTL).unwrap().id;
+
+        assert_eq!(store.trim_temp(2).unwrap().rows, 1);
+        assert!(store.clip_content(pinned_old).unwrap().is_some());
+        assert!(store.clip_content(unpinned_new).unwrap().is_some());
+        assert!(store.clip_content(unpinned_mid).unwrap().is_none());
     }
 }

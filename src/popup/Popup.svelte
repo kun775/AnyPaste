@@ -164,6 +164,7 @@
   }
 
   onMount(() => {
+    searchEl?.focus();
     const clock = setInterval(() => (now = Date.now()), 30_000);
     getSettings()
       .then((v) => applySettings(v.settings))
@@ -396,7 +397,7 @@
         e.preventDefault();
         const row = preview;
         preview = null;
-        paste(row);
+        paste(row, e.shiftKey);
       }
       return;
     }
@@ -465,7 +466,13 @@
   }
 </script>
 
-<svelte:window onkeydown={onKeydown} onfocus={() => searchEl?.focus()} onblur={onBlur} />
+<svelte:window
+  onkeydown={onKeydown}
+  onfocus={() => {
+    if (!preview && !confirm && !menu) searchEl?.focus();
+  }}
+  onblur={onBlur}
+/>
 
 <main class="popup">
   <div class="drag" data-tauri-drag-region title="拖动以移动窗口">{@html icons.grip}</div>

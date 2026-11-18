@@ -59,14 +59,16 @@ pub async fn list_clips(
     query: Option<String>,
     before: Option<Cursor>,
 ) -> CmdResult<Vec<ClipItem>> {
+    let permanent = matches!(tab, Tab::Perm);
+    // 频率排序仅用于永久条目；临时条目始终按最近复制时间排列，避免刚复制的内容沉底
     store
         .list_clips_filtered(
-            matches!(tab, Tab::Perm),
+            permanent,
             kind,
             query.as_deref(),
             before,
             now_ms(),
-            prefs.get().sort_by_frequency,
+            permanent && prefs.get().sort_by_frequency,
         )
         .map_err(err)
 }
@@ -159,9 +161,7 @@ pub async fn set_permanent(
 pub async fn set_pinned(app: AppHandle, store: State<'_, Store>, id: i64, pinned: bool) -> CmdResult<()> {
     store.set_pinned(id, pinned, now_ms()).map_err(err)?;
     // 置顶只影响本机排序，不需要触发同步，只通知界面刷新
-    if let Err(e) = tauri::Emitter::emit(&app, events::CLIPS_CHANGED, ()) {
-        log::warn!("发送 {} 事件失败: {e}", events::CLIPS_CHANGED);
-    }
+    events::emit_clips_changed(&app);
     Ok(())
 }
 
@@ -213,8 +213,8 @@ pub async fn snippet_text(store: State<'_, Store>, id: i64) -> CmdResult<ClipTex
 
 #[tauri::command]
 pub async fn delete_clip(app: AppHandle, store: State<'_, Store>, paths: State<'_, AppPaths>, id: i64) -> CmdResult<()> {
-    // 开启同步时永久条目留下墓碑，以便把删除同步到其他设备
-    let tombstone = sync::is_enabled(&app) && store.is_permanent(id).map_err(err)?;
+    // 开启同步时，永久条目或刚从永久转为临时的条目留下墓碑，以便把删除同步到其他设备
+    let tombstone = sync::is_enabled(&app) && store.needs_tombstone(id).map_err(err)?;
     let deleted = if tombstone {
         store.tombstone_clip(id, now_ms())
     } else {
@@ -280,8 +280,14 @@ fn create_snippet(app: &AppHandle, store: &Store, title: &str, content: &str, ma
 }
 
 #[tauri::command]
-pub async fn list_snippets(store: State<'_, Store>, query: Option<String>) -> CmdResult<Vec<SnippetItem>> {
-    store.list_snippets(query.as_deref()).map_err(err)
+pub async fn list_snippets(
+    store: State<'_, Store>,
+    prefs: State<'_, SettingsState>,
+    query: Option<String>,
+) -> CmdResult<Vec<SnippetItem>> {
+    store
+        .list_snippets(query.as_deref(), prefs.get().sort_by_frequency)
+        .map_err(err)
 }
 
 #[derive(Serialize)]
@@ -367,11 +373,21 @@ fn load_snippet(app: &AppHandle, id: i64) -> anyhow::Result<ClipContent> {
 
 #[tauri::command]
 pub async fn paste_snippet(app: AppHandle, id: i64) -> CmdResult<PasteResult> {
-    let content = load_snippet(&app, id).map_err(err)?;
-    tauri::async_runtime::spawn_blocking(move || paste_content_blocking(&app, content, true))
+    tauri::async_runtime::spawn_blocking(move || paste_snippet_blocking(&app, id))
         .await
         .map_err(err)?
         .map_err(err)
+}
+
+fn paste_snippet_blocking(app: &AppHandle, id: i64) -> anyhow::Result<PasteResult> {
+    let content = load_snippet(app, id)?;
+    let result = paste_content_blocking(app, content, true)?;
+    if result.pasted {
+        if let Err(e) = app.state::<Store>().record_snippet_paste(id) {
+            log::warn!("记录片段粘贴次数失败: {e}");
+        }
+    }
+    Ok(result)
 }
 
 #[tauri::command]

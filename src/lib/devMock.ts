@@ -131,13 +131,14 @@ export function installMock(window: "popup" | "settings") {
     portable: false,
   };
   type MockSnippet = SnippetItem & { content: string };
-  const snippetOf = (id: number, title: string, content: string, updatedAt: number): MockSnippet => ({
+  const snippetOf = (id: number, title: string, content: string, updatedAt: number, pasteCount = 0): MockSnippet => ({
     id,
     title,
     content,
     preview: [...content].slice(0, 400).join(""),
     chars: [...content].length,
     updatedAt,
+    pasteCount,
   });
   let snippets: MockSnippet[] = [
     snippetOf(
@@ -145,9 +146,10 @@ export function installMock(window: "popup" | "settings") {
       "工作邮件开头",
       "你好，\n\n附件是本周的进度报告，请查收。如有问题随时联系。\n\n谢谢！",
       Date.now() - 2 * HOUR,
+      5,
     ),
-    snippetOf(2, "公司地址", "上海市浦东新区示例路 88 号 A 座 12 楼", Date.now() - 26 * HOUR),
-    snippetOf(3, "常用审查命令", "cargo clippy --all-targets -- -D warnings\ncargo test", Date.now() - 3 * 24 * HOUR),
+    snippetOf(2, "公司地址", "上海市浦东新区示例路 88 号 A 座 12 楼", Date.now() - 26 * HOUR, 8),
+    snippetOf(3, "常用审查命令", "cargo clippy --all-targets -- -D warnings\ncargo test", Date.now() - 3 * 24 * HOUR, 2),
   ];
   let nextSnippetId = 100;
   const snippetItem = (s: MockSnippet): SnippetItem => ({
@@ -156,6 +158,7 @@ export function installMock(window: "popup" | "settings") {
     preview: s.preview,
     chars: s.chars,
     updatedAt: s.updatedAt,
+    pasteCount: s.pasteCount,
   });
   const emitSnippets = () => emit("snippets-changed");
   const view = () => ({ settings, autostart, winVReleased: settings.takeOverWinV, winVActive });
@@ -212,8 +215,9 @@ export function installMock(window: "popup" | "settings") {
         case "list_clips": {
           const before = args.before as Cursor | null;
           const kind = (args.kind ?? null) as KindFilter | null;
-          const byFrequency = settings.sortByFrequency;
-          const all = visible(args.tab as Tab, args.query as string | null).filter((i) => matchesKind(i, kind));
+          const tab = args.tab as Tab;
+          const byFrequency = tab === "perm" && settings.sortByFrequency;
+          const all = visible(tab, args.query as string | null).filter((i) => matchesKind(i, kind));
           const pinned = before ? [] : all.filter((i) => i.pinned);
           let list = all
             .filter((i) => !i.pinned)
@@ -268,9 +272,14 @@ export function installMock(window: "popup" | "settings") {
         }
         case "list_snippets": {
           const q = ((args.query as string | null) ?? "").trim().toLowerCase();
+          const byFrequency = settings.sortByFrequency;
           return snippets
             .filter((s) => !q || s.title.toLowerCase().includes(q) || s.content.toLowerCase().includes(q))
-            .sort((a, b) => b.updatedAt - a.updatedAt || b.id - a.id)
+            .sort((a, b) =>
+              byFrequency
+                ? b.pasteCount - a.pasteCount || b.updatedAt - a.updatedAt || b.id - a.id
+                : b.updatedAt - a.updatedAt || b.id - a.id,
+            )
             .map((s) => ({ ...snippetItem(s), preview: snippetPreview(s.content, q) }));
         }
         case "get_snippet": {
@@ -288,7 +297,7 @@ export function installMock(window: "popup" | "settings") {
           if (sid) {
             const index = snippets.findIndex((s) => s.id === sid);
             if (index < 0) throw "片段不存在或已删除";
-            saved = snippetOf(sid, title, content, Date.now());
+            saved = snippetOf(sid, title, content, Date.now(), snippets[index].pasteCount);
             snippets = snippets.map((s) => (s.id === sid ? saved : s));
           } else {
             saved = snippetOf(++nextSnippetId, title, content, Date.now());

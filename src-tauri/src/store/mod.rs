@@ -29,6 +29,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/003_pin.sql"),
     include_str!("migrations/004_snippets.sql"),
     include_str!("migrations/005_paste_count.sql"),
+    include_str!("migrations/006_sync_and_sort.sql"),
 ];
 
 /// SQLite 存储。连接用互斥锁串行化，剪贴板监听、清理线程和前端命令共用。

@@ -3,7 +3,13 @@
 mod crypto;
 pub mod engine;
 
-use std::{sync::Mutex, time::Duration};
+use std::{
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex,
+    },
+    time::Duration,
+};
 
 use anyhow::{bail, Context};
 use opendal::{services, Operator};
@@ -281,6 +287,7 @@ pub struct SyncStatus {
 pub struct SyncService {
     manual: Notify,
     dirty: Notify,
+    dirty_seq: AtomicU64,
     status: Mutex<SyncStatus>,
     /// 上次成功同步后的本地指纹；本地变化触发的同步在指纹未变时跳过。
     synced: Mutex<Option<Fingerprint>>,
@@ -312,6 +319,7 @@ pub fn request(app: &AppHandle) {
 /// 本地条目有变化，防抖后同步。
 pub fn mark_dirty(app: &AppHandle) {
     if let Some(svc) = app.try_state::<SyncService>() {
+        svc.dirty_seq.fetch_add(1, Ordering::AcqRel);
         svc.dirty.notify_one();
     }
 }
@@ -376,9 +384,8 @@ async fn run(app: &AppHandle) {
     let svc = app.state::<SyncService>();
     let _guard = svc.running.lock().await;
     svc.update_status(app, |s| s.state = SyncState::Syncing);
-    // 在开始前取指纹：同步期间本机的新改动会让指纹与之不同，下次本地变化触发时不会被误判为已同步。
-    // 代价是本轮下载造成的变化会再触发一次（无事可做的）同步。
-    let before = app.state::<Store>().sync_fingerprint().ok();
+    let seq_before = svc.dirty_seq.load(Ordering::Acquire);
+    let fp_before = app.state::<Store>().sync_fingerprint().ok();
 
     let result = match tokio::time::timeout(RUN_TIMEOUT, run_once(app)).await {
         Ok(r) => r.map_err(friendly),
@@ -388,7 +395,14 @@ async fn run(app: &AppHandle) {
         Ok(report) => {
             let now = now_ms();
             let _ = app.state::<Store>().put_setting(LAST_SYNC_KEY, &now.to_string());
-            *svc.synced.lock().unwrap_or_else(|e| e.into_inner()) = before;
+            // 同步期间若无本机新改动，直接记录落地后的最新指纹，避免本轮下载触发多余的下一轮同步；
+            // 若期间有本机改动，则保留开始前指纹，让后续防抖正常比对上传。
+            let synced_fp = if svc.dirty_seq.load(Ordering::Acquire) == seq_before {
+                app.state::<Store>().sync_fingerprint().ok()
+            } else {
+                fp_before
+            };
+            *svc.synced.lock().unwrap_or_else(|e| e.into_inner()) = synced_fp;
             log::info!(
                 "同步完成：上传 {}，下载 {}，删除 {}",
                 report.uploaded,
@@ -402,7 +416,7 @@ async fn run(app: &AppHandle) {
                 s.last_report = Some(report);
             });
             if report.changed_local() {
-                events::clips_changed(app);
+                events::emit_clips_changed(app);
             }
         }
         Err(e) => {

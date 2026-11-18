@@ -192,7 +192,7 @@
       <div class="row">
         <div class="rt">
           <b>按粘贴频率排序</b>
-          <small>按实际粘贴次数从高到低排列，置顶条目始终单独排在最前；关闭后按最近复制时间排列</small>
+          <small>在「永久」和「片段」中按实际粘贴次数从高到低排列（置顶条目始终在最前）；「临时」始终按最近复制时间排列</small>
         </div>
         <label class="switch"><input type="checkbox" checked={s.sortByFrequency} onchange={(e) => save({ sortByFrequency: e.currentTarget.checked })} /><span></span></label>
       </div>

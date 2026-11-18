@@ -46,6 +46,7 @@ export interface SnippetItem {
   preview: string;
   chars: number;
   updatedAt: number;
+  pasteCount: number;
 }
 
 /** 编辑片段时读取的完整内容。 */
@@ -96,7 +97,7 @@ export interface Settings {
   paused: boolean;
   theme: Theme;
   popupPosition: PopupPosition;
-  /** 按实际粘贴次数从高到低排列（置顶条目始终在最前）；关闭后按最近复制时间排列。 */
+  /** 在「永久」和「片段」中按实际粘贴次数从高到低排列（置顶条目始终在最前）；「临时」始终按最近复制时间排列。 */
   sortByFrequency: boolean;
   plainPasteDefault: boolean;
   /** 弹出列表隐藏多少秒后释放内存；0 表示常驻。 */

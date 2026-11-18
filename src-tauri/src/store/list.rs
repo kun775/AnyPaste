@@ -10,6 +10,10 @@ pub const PAGE_SIZE: usize = 100;
 const MAX_PINNED: usize = 100;
 /// 列表只传预览文字，避免大段文本拖慢 IPC 和渲染。
 const PREVIEW_CHARS: i64 = 400;
+/// 搜索命中靠后时，预览从命中位置之前多少个字符开始截取。
+const EXCERPT_LEAD: i64 = 24;
+/// 命中位置超过该字符数才截取，避免开头命中时预览跳动。
+const EXCERPT_THRESHOLD: i64 = 48;
 /// trigram 分词需要至少 3 个字符，更短的查询退化为 LIKE。
 const FTS_MIN_CHARS: usize = 3;
 
@@ -150,8 +154,26 @@ impl Store {
         queue: Queue,
     ) -> rusqlite::Result<Vec<ClipItem>> {
         let by_frequency = matches!(queue, Queue::Normal { by_frequency: true });
+        let search = search.map(str::trim).filter(|s| !s.is_empty());
+        let mut args: Vec<Value> = vec![(permanent as i64).into(), now.into()];
+
+        // 命中位置在 400 字预览范围之外时动态截取命中处附近文本（文件列表需保留完整首行路径统计文件名，不截断开头）
+        let preview_expr = match search {
+            Some(q) => {
+                args.push(q.to_string().into());
+                let p = args.len();
+                format!(
+                    "CASE WHEN kind != 'files' AND instr(lower(text), lower(?{p})) > {EXCERPT_THRESHOLD}
+                          THEN '…' || substr(text, max(1, instr(lower(text), lower(?{p})) - {EXCERPT_LEAD}), {PREVIEW_CHARS})
+                          ELSE substr(text, 1, {PREVIEW_CHARS})
+                     END"
+                )
+            }
+            None => format!("substr(text, 1, {PREVIEW_CHARS})"),
+        };
+
         let mut sql = format!(
-            "SELECT id, kind, substr(text, 1, {PREVIEW_CHARS}), html IS NOT NULL OR rtf IS NOT NULL,
+            "SELECT id, kind, {preview_expr}, html IS NOT NULL OR rtf IS NOT NULL,
                     thumb, size_bytes, source_app, is_permanent, last_copied_at, expires_at,
                     pinned_at IS NOT NULL, paste_count
              FROM clips
@@ -162,20 +184,22 @@ impl Store {
                 Queue::Normal { .. } => "NULL",
             }
         );
-        let mut args: Vec<Value> = vec![(permanent as i64).into(), now.into()];
 
         if let Some(c) = before {
+            let base = args.len();
             if by_frequency {
                 // 与 ORDER BY paste_count, last_copied_at, id 对应的键集分页
-                sql.push_str(
-                    " AND (paste_count < ?3 OR (paste_count = ?3 AND (last_copied_at < ?4
-                       OR (last_copied_at = ?4 AND id < ?5))))",
-                );
+                let (p_cnt, p_ts, p_id) = (base + 1, base + 2, base + 3);
+                sql.push_str(&format!(
+                    " AND (paste_count < ?{p_cnt} OR (paste_count = ?{p_cnt} AND (last_copied_at < ?{p_ts}
+                       OR (last_copied_at = ?{p_ts} AND id < ?{p_id}))))"
+                ));
                 args.push(c.paste_count.into());
                 args.push(c.last_copied_at.into());
                 args.push(c.id.into());
             } else {
-                sql.push_str(" AND (last_copied_at < ?3 OR (last_copied_at = ?3 AND id < ?4))");
+                let (p_ts, p_id) = (base + 1, base + 2);
+                sql.push_str(&format!(" AND (last_copied_at < ?{p_ts} OR (last_copied_at = ?{p_ts} AND id < ?{p_id}))"));
                 args.push(c.last_copied_at.into());
                 args.push(c.id.into());
             }
@@ -185,7 +209,6 @@ impl Store {
             sql.push_str(&format!(" AND ({})", f.condition()));
         }
 
-        let search = search.map(str::trim).filter(|s| !s.is_empty());
         if let Some(q) = search {
             let n = args.len() + 1;
             if q.chars().count() >= FTS_MIN_CHARS {
@@ -450,6 +473,44 @@ mod tests {
         let id = seed(&store, &["searchable text"]);
         store.delete_clip(id[0]).unwrap();
         assert!(store.list_clips(false, Some("searchable"), None, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn clip_preview_follows_late_search_hit_except_files() {
+        let store = Store::open_in_memory().unwrap();
+        let long_text = format!("{}关键命中词{}", "前".repeat(500), "后".repeat(200));
+        store.upsert_clip(&text_clip(&long_text), 10, TTL).unwrap();
+
+        let hit = &store.list_clips(false, Some("关键命中词"), None, 0).unwrap()[0];
+        assert!(hit.preview.starts_with('…'));
+        assert!(hit.preview.contains("关键命中词"));
+
+        let mut files = text_clip(&format!("{}\\target_file.png", "C:\\very_long_folder".repeat(10)));
+        files.kind = crate::store::ClipKind::Files;
+        store.upsert_clip(&files, 20, TTL).unwrap();
+        let file_hit = &store.list_clips(false, Some("target_file"), None, 0).unwrap()[0];
+        assert!(!file_hit.preview.starts_with('…'));
+    }
+
+    #[test]
+    fn default_queries_use_partial_indexes_without_temp_btree() {
+        let store = Store::open_in_memory().unwrap();
+        let conn = store.conn();
+        for sql in [
+            "EXPLAIN QUERY PLAN SELECT id FROM clips WHERE is_permanent = ?1 AND deleted_at IS NULL AND (is_permanent = 1 OR expires_at > ?2) AND pinned_at IS NOT NULL ORDER BY pinned_at DESC, id DESC LIMIT 100",
+            "EXPLAIN QUERY PLAN SELECT id FROM clips WHERE is_permanent = ?1 AND deleted_at IS NULL AND (is_permanent = 1 OR expires_at > ?2) AND pinned_at IS NULL ORDER BY last_copied_at DESC, id DESC LIMIT 100",
+            "EXPLAIN QUERY PLAN SELECT id FROM clips WHERE is_permanent = ?1 AND deleted_at IS NULL AND (is_permanent = 1 OR expires_at > ?2) AND pinned_at IS NULL ORDER BY paste_count DESC, last_copied_at DESC, id DESC LIMIT 100",
+        ] {
+            let mut stmt = conn.prepare(sql).unwrap();
+            let details: Vec<String> = stmt
+                .query_map([1i64, 0i64], |r| r.get::<_, String>(3))
+                .unwrap()
+                .map(Result::unwrap)
+                .collect();
+            let joined = details.join(" | ");
+            assert!(joined.contains("USING INDEX"), "未命中索引: {joined}");
+            assert!(!joined.contains("TEMP B-TREE"), "产生了临时排序: {joined}");
+        }
     }
 
     #[test]

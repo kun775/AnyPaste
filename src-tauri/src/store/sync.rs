@@ -31,10 +31,10 @@ pub struct ClipRecord {
 pub enum LocalState {
     /// 永久条目，参与同步。
     Live,
-    /// 已删除的永久条目（墓碑）。
+    /// 已删除的永久条目（墓碑），或已主动从永久转为临时的条目。
     Deleted,
-    /// 临时条目，不参与同步；云端存在同内容的条目时，说明它已被转为临时。
-    Local,
+    /// 从未设为永久的本机临时条目：不向云端上传删除，云端存在同内容永久条目时合并升级为永久。
+    TempOnly,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,15 +72,21 @@ fn to_record(r: &Row<'_>) -> rusqlite::Result<ClipRecord> {
 impl Store {
     pub fn sync_entries(&self) -> rusqlite::Result<Vec<LocalEntry>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare("SELECT content_hash, is_permanent, deleted_at, updated_at FROM clips")?;
+        let mut stmt = conn.prepare(
+            "SELECT content_hash, is_permanent, deleted_at, perm_removed_at, updated_at FROM clips",
+        )?;
         let rows = stmt.query_map([], |r| {
             let permanent: bool = r.get(1)?;
             let deleted: Option<i64> = r.get(2)?;
-            let updated: i64 = r.get(3)?;
+            let perm_removed: Option<i64> = r.get(3)?;
+            let updated: i64 = r.get(4)?;
             let (state, version) = match deleted {
                 Some(at) => (LocalState::Deleted, at),
                 None if permanent => (LocalState::Live, updated),
-                None => (LocalState::Local, updated),
+                None => match perm_removed {
+                    Some(at) => (LocalState::Deleted, at),
+                    None => (LocalState::TempOnly, updated),
+                },
             };
             Ok(LocalEntry { content_hash: r.get(0)?, version, state })
         })?;
@@ -90,7 +96,7 @@ impl Store {
     pub fn sync_fingerprint(&self) -> rusqlite::Result<Fingerprint> {
         self.conn().query_row(
             "SELECT COUNT(*), COALESCE(MAX(updated_at), 0) FROM clips
-             WHERE is_permanent = 1 OR deleted_at IS NOT NULL",
+             WHERE is_permanent = 1 OR deleted_at IS NOT NULL OR perm_removed_at IS NOT NULL",
             [],
             |r| Ok(Fingerprint { count: r.get(0)?, max_updated: r.get(1)? }),
         )
@@ -120,7 +126,7 @@ impl Store {
                kind = excluded.kind, text = excluded.text, html = excluded.html, rtf = excluded.rtf,
                image_file = excluded.image_file, thumb = excluded.thumb, size_bytes = excluded.size_bytes,
                source_app = excluded.source_app, is_permanent = 1, created_at = excluded.created_at,
-               last_copied_at = excluded.last_copied_at, expires_at = NULL,
+               last_copied_at = excluded.last_copied_at, expires_at = NULL, perm_removed_at = NULL,
                updated_at = excluded.updated_at, deleted_at = NULL",
             params![
                 uuid::Uuid::new_v4().to_string(),
@@ -141,20 +147,35 @@ impl Store {
         Ok(())
     }
 
-    /// 云端删除了该条目：删除本地的永久条目或墓碑；同内容的临时条目属于本机，保留。
+    /// 云端删除了该条目：删除本地的永久条目或墓碑；同内容的临时条目属于本机，保留并清除待传播标记。
     pub fn apply_remote_delete(&self, content_hash: &str) -> rusqlite::Result<Deleted> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "DELETE FROM clips WHERE content_hash = ?1 AND (is_permanent = 1 OR deleted_at IS NOT NULL)
-             RETURNING image_file",
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let (rows, imgs) = {
+            let mut stmt = tx.prepare(
+                "DELETE FROM clips WHERE content_hash = ?1 AND (is_permanent = 1 OR deleted_at IS NOT NULL)
+                 RETURNING deleted_at IS NULL, image_file",
+            )?;
+            let mapped = stmt.query_map([content_hash], |r| Ok((r.get::<_, bool>(0)?, r.get::<_, Option<String>>(1)?)))?;
+            let mut live_rows = 0;
+            let mut imgs = Vec::new();
+            for item in mapped {
+                let (was_live, img) = item?;
+                if was_live {
+                    live_rows += 1;
+                }
+                imgs.extend(img);
+            }
+            (live_rows, imgs)
+        };
+        tx.execute(
+            "UPDATE clips SET perm_removed_at = NULL
+             WHERE content_hash = ?1 AND is_permanent = 0 AND deleted_at IS NULL",
+            [content_hash],
         )?;
-        let rows = stmt.query_map([content_hash], |r| r.get::<_, Option<String>>(0))?;
-        let mut out = Deleted::default();
-        for row in rows {
-            out.rows += 1;
-            out.image_files.extend(row?);
-        }
-        Ok(out)
+        let image_files = super::clips::unreferenced_images(&tx, imgs)?;
+        tx.commit()?;
+        Ok(Deleted { rows, image_files })
     }
 
     /// 同步开启时删除永久条目：清空内容只保留墓碑，等待同步到其他设备。返回需删除的图片。
@@ -165,13 +186,14 @@ impl Store {
             .query_row("SELECT image_file FROM clips WHERE id = ?1", [id], |r| r.get(0))
             .optional()?;
         let rows = tx.execute(
-            "UPDATE clips SET deleted_at = ?2, updated_at = ?2, text = NULL, html = NULL, rtf = NULL,
-               image_file = NULL, thumb = NULL, pinned_at = NULL
+            "UPDATE clips SET deleted_at = ?2, updated_at = ?2, perm_removed_at = NULL,
+               text = NULL, html = NULL, rtf = NULL, image_file = NULL, thumb = NULL, pinned_at = NULL
              WHERE id = ?1",
             params![id, now],
         )?;
+        let image_files = super::clips::unreferenced_images(&tx, image.flatten())?;
         tx.commit()?;
-        Ok(Deleted { rows, image_files: image.flatten().into_iter().collect() })
+        Ok(Deleted { rows, image_files })
     }
 
     /// 清理早于 `before` 的墓碑。
@@ -179,10 +201,16 @@ impl Store {
         self.conn().execute("DELETE FROM clips WHERE deleted_at IS NOT NULL AND deleted_at < ?1", [before])
     }
 
-    pub fn is_permanent(&self, id: i64) -> rusqlite::Result<bool> {
+    /// 开启云同步时删除该条目是否需要保留墓碑（永久条目，或刚从永久转为临时但尚未向云端传播删除的条目）。
+    pub fn needs_tombstone(&self, id: i64) -> rusqlite::Result<bool> {
         Ok(self
             .conn()
-            .query_row("SELECT is_permanent FROM clips WHERE id = ?1", [id], |r| r.get::<_, bool>(0))
+            .query_row(
+                "SELECT is_permanent = 1 OR perm_removed_at IS NOT NULL FROM clips
+                 WHERE id = ?1 AND deleted_at IS NULL",
+                [id],
+                |r| r.get::<_, bool>(0),
+            )
             .optional()?
             .unwrap_or(false))
     }
@@ -213,7 +241,7 @@ pub(crate) mod tests {
         e.sort_by_key(|x| x.version);
         assert_eq!(e[0], LocalEntry { content_hash: "hash-live".into(), version: 10, state: LocalState::Live });
         assert_eq!(e[1], LocalEntry { content_hash: "hash-dead".into(), version: 30, state: LocalState::Deleted });
-        assert_eq!(e[2].state, LocalState::Local);
+        assert_eq!(e[2].state, LocalState::TempOnly);
         assert_eq!(store.sync_fingerprint().unwrap(), Fingerprint { count: 2, max_updated: 30 });
     }
 

@@ -28,15 +28,21 @@ pub struct SnippetItem {
     /// 内容的字符数。
     pub chars: usize,
     pub updated_at: i64,
+    pub paste_count: i64,
 }
 
 impl Store {
-    pub fn list_snippets(&self, search: Option<&str>) -> rusqlite::Result<Vec<SnippetItem>> {
+    pub fn list_snippets(&self, search: Option<&str>, by_frequency: bool) -> rusqlite::Result<Vec<SnippetItem>> {
         let needle = search.map(str::trim).filter(|s| !s.is_empty()).unwrap_or("");
         let pattern = if needle.is_empty() {
             "%".into()
         } else {
             format!("%{}%", escape_like(needle))
+        };
+        let order = if by_frequency {
+            "paste_count DESC, updated_at DESC, id DESC"
+        } else {
+            "updated_at DESC, id DESC"
         };
         // 命中在正文靠后位置时从命中处附近截取预览，否则列表行里看不到搜索词。
         // 空查询时 instr 返回 1，走“开头预览”分支。
@@ -47,14 +53,14 @@ impl Store {
                          THEN '…' || substr(content, max(1, pos - {EXCERPT_LEAD}), {PREVIEW_CHARS})
                          ELSE substr(content, 1, {PREVIEW_CHARS})
                     END,
-                    length(content), updated_at
+                    length(content), updated_at, paste_count
              FROM (
-               SELECT id, title, content, updated_at,
+               SELECT id, title, content, updated_at, paste_count,
                       instr(lower(content), lower(?1)) AS pos
                FROM snippets
                WHERE title LIKE ?2 ESCAPE '\\' OR content LIKE ?2 ESCAPE '\\'
              )
-             ORDER BY updated_at DESC, id DESC
+             ORDER BY {order}
              LIMIT {MAX_SNIPPETS}"
         ))?;
         let rows = stmt.query_map(params![needle, pattern], row_to_item)?;
@@ -119,6 +125,13 @@ impl Store {
     pub fn delete_snippet(&self, id: i64) -> rusqlite::Result<bool> {
         Ok(self.conn().execute("DELETE FROM snippets WHERE id = ?1", [id])? > 0)
     }
+
+    /// 记录一次实际粘贴，供「片段」标签页按使用频率排序。
+    pub fn record_snippet_paste(&self, id: i64) -> rusqlite::Result<()> {
+        self.conn()
+            .execute("UPDATE snippets SET paste_count = paste_count + 1 WHERE id = ?1", [id])?;
+        Ok(())
+    }
 }
 
 impl From<rusqlite::Error> for CreateSnippetError {
@@ -129,7 +142,7 @@ impl From<rusqlite::Error> for CreateSnippetError {
 
 fn item_by_id(conn: &rusqlite::Connection, id: i64) -> rusqlite::Result<SnippetItem> {
     conn.query_row(
-        "SELECT id, title, substr(content, 1, ?2), length(content), updated_at FROM snippets WHERE id = ?1",
+        "SELECT id, title, substr(content, 1, ?2), length(content), updated_at, paste_count FROM snippets WHERE id = ?1",
         params![id, PREVIEW_CHARS],
         row_to_item,
     )
@@ -142,6 +155,7 @@ fn row_to_item(r: &Row<'_>) -> rusqlite::Result<SnippetItem> {
         preview: r.get(2)?,
         chars: r.get::<_, i64>(3)? as usize,
         updated_at: r.get(4)?,
+        paste_count: r.get(5)?,
     })
 }
 
@@ -159,10 +173,10 @@ mod tests {
         let mail = seed(&store, "工作邮件", "你好，附件是本周的进度报告。", 10);
         let addr = seed(&store, "公司地址", "上海市浦东新区示例路 88 号", 20);
         assert_eq!(store.counts(0).unwrap().snippets, 2);
-        assert_eq!(store.list_snippets(None).unwrap()[0].id, addr.id);
-        assert_eq!(store.list_snippets(Some("进度")).unwrap()[0].id, mail.id);
-        assert_eq!(store.list_snippets(Some("公司地址")).unwrap()[0].id, addr.id);
-        assert!(store.list_snippets(Some("不存在")).unwrap().is_empty());
+        assert_eq!(store.list_snippets(None, false).unwrap()[0].id, addr.id);
+        assert_eq!(store.list_snippets(Some("进度"), false).unwrap()[0].id, mail.id);
+        assert_eq!(store.list_snippets(Some("公司地址"), false).unwrap()[0].id, addr.id);
+        assert!(store.list_snippets(Some("不存在"), false).unwrap().is_empty());
 
         let updated = store.update_snippet(mail.id, "周报邮件", "新的正文", 30).unwrap().unwrap();
         assert_eq!((updated.title.as_str(), updated.preview.as_str()), ("周报邮件", "新的正文"));
@@ -171,6 +185,24 @@ mod tests {
         assert!(store.delete_snippet(addr.id).unwrap());
         assert!(!store.delete_snippet(addr.id).unwrap());
         assert_eq!(store.counts(0).unwrap().snippets, 1);
+    }
+
+    #[test]
+    fn orders_by_paste_frequency_when_enabled() {
+        let store = Store::open_in_memory().unwrap();
+        let a = seed(&store, "一", "正文一", 10);
+        let b = seed(&store, "二", "正文二", 20);
+        let c = seed(&store, "三", "正文三", 30);
+        store.record_snippet_paste(a.id).unwrap();
+        store.record_snippet_paste(a.id).unwrap();
+        store.record_snippet_paste(b.id).unwrap();
+
+        let by_freq: Vec<i64> = store.list_snippets(None, true).unwrap().into_iter().map(|s| s.id).collect();
+        assert_eq!(by_freq, vec![a.id, b.id, c.id]);
+        assert_eq!(store.list_snippets(None, true).unwrap()[0].paste_count, 2);
+
+        let by_time: Vec<i64> = store.list_snippets(None, false).unwrap().into_iter().map(|s| s.id).collect();
+        assert_eq!(by_time, vec![c.id, b.id, a.id]);
     }
 
     #[test]
@@ -185,7 +217,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let content = format!("{}发票{}", "前".repeat(300), "后".repeat(300));
         seed(&store, "账单", &content, 10);
-        let item = &store.list_snippets(Some("发票")).unwrap()[0];
+        let item = &store.list_snippets(Some("发票"), false).unwrap()[0];
         assert!(item.preview.starts_with('…'));
         assert!(item.preview.contains("发票"));
         assert_eq!(item.chars, content.chars().count());
