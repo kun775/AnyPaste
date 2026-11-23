@@ -384,7 +384,7 @@ export function installMock(window: "popup" | "settings") {
           return { temp: visible("temp", null).length, perm: visible("perm", null).length, bytes: 18_400_000 };
         case "app_info":
           return {
-            version: "0.6.1-dev",
+            version: "0.6.2-dev",
             dataDir: "C:\\Users\\me\\AppData\\Roaming\\AnyPaste",
             logDir: "C:\\Users\\me\\AppData\\Roaming\\AnyPaste\\logs",
             repoUrl: "https://github.com/kun775/AnyPaste",
@@ -401,8 +401,8 @@ export function installMock(window: "popup" | "settings") {
             checking: false,
             lastCheckedAt: Date.now(),
             available: {
-              version: "0.6.2",
-              notes: "- 频率排序仅作用于永久条目与常用片段，临时列表保持最近复制优先\n- 修复云同步与共享图片清理问题\n- 长文本搜索预览自动定位命中位置",
+              version: "0.6.3",
+              notes: "- 修复 PixPin 等截图工具复制图片被识别为文件的问题\n- 图片预览默认按原图尺寸展开并新增全屏预览",
               date: null,
             },
           };
