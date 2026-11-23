@@ -25,6 +25,10 @@ pub struct AppState {
     popup_creating: AtomicBool,
     /// 弹窗页面加载完成后需要显示。
     popup_show_pending: AtomicBool,
+    /// 当前弹窗是否因图片预览被放大或进入全屏。
+    preview_expanded: AtomicBool,
+    /// 进入图片预览前弹窗的物理位置，关闭预览时恢复。
+    preview_saved_pos: Mutex<Option<(i32, i32)>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -109,6 +113,22 @@ impl AppState {
     pub fn take_popup_show(&self) -> bool {
         self.popup_show_pending.swap(false, Ordering::AcqRel)
     }
+
+    /// 首次进入图片预览时标记已放大并保存弹窗原位置；已在预览状态时保留原位置不变。
+    pub fn enter_preview(&self, pos: Option<(i32, i32)>) {
+        if !self.preview_expanded.swap(true, Ordering::AcqRel) {
+            *lock(&self.preview_saved_pos) = pos;
+        }
+    }
+
+    /// 退出图片预览：若之前处于放大/全屏状态，返回 `Some(原位置)` 并清除状态。
+    pub fn exit_preview(&self) -> Option<Option<(i32, i32)>> {
+        if self.preview_expanded.swap(false, Ordering::AcqRel) {
+            Some(lock(&self.preview_saved_pos).take())
+        } else {
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -156,5 +176,16 @@ mod tests {
         assert!(!s.begin_permanent_copy());
         s.end_permanent_copy();
         assert!(s.begin_permanent_copy());
+    }
+
+    #[test]
+    fn preview_state_preserves_initial_position_until_exit() {
+        let s = AppState::default();
+        assert_eq!(s.exit_preview(), None);
+        s.enter_preview(Some((120, 240)));
+        // 切换全屏/原图尺寸时再次调用不应覆盖初始位置
+        s.enter_preview(Some((0, 0)));
+        assert_eq!(s.exit_preview(), Some(Some((120, 240))));
+        assert_eq!(s.exit_preview(), None);
     }
 }

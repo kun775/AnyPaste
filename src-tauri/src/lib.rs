@@ -64,6 +64,7 @@ pub fn run() {
         .manage(paths)
         .invoke_handler(tauri::generate_handler![
             commands::hide_popup,
+            commands::set_popup_preview,
             commands::open_settings,
             commands::is_paused,
             commands::list_clips,

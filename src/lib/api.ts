@@ -177,7 +177,13 @@ export interface StorageStats {
   bytes: number;
 }
 
+export type PreviewMode =
+  | { mode: "restore" }
+  | { mode: "fit"; width: number; height: number }
+  | { mode: "fullscreen" };
+
 export const hidePopup = () => invoke<void>("hide_popup");
+export const setPopupPreview = (mode: PreviewMode) => invoke<void>("set_popup_preview", { mode });
 export const openSettings = () => invoke<void>("open_settings");
 export const isPaused = () => invoke<boolean>("is_paused");
 export const appInfo = () => invoke<AppInfo>("app_info");

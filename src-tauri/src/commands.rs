@@ -38,6 +38,11 @@ pub fn hide_popup(app: AppHandle) {
     windows::hide_popup(&app);
 }
 
+#[tauri::command]
+pub fn set_popup_preview(app: AppHandle, mode: windows::PreviewMode) -> CmdResult<()> {
+    windows::set_popup_preview(&app, mode).map_err(err)
+}
+
 /// 异步命令：Windows 上在同步命令里创建窗口会死锁。
 #[tauri::command]
 pub async fn open_settings(app: AppHandle) {

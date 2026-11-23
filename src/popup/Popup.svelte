@@ -23,6 +23,7 @@
     saveClipAsSnippet,
     setPermanent,
     setPinned,
+    setPopupPreview,
     type ClipItem,
     type Counts,
     type KindFilter,
@@ -79,6 +80,7 @@
   let toast = $state<{ text: string; error: boolean } | null>(null);
   let plainDefault = $state(false);
   let preview = $state<Row | null>(null);
+  let imageFullscreen = $state(false);
 
   let searchEl: HTMLInputElement | undefined = $state();
   let listEl: HTMLUListElement | undefined = $state();
@@ -177,6 +179,7 @@
         menu = null;
         confirm = null;
         preview = null;
+        imageFullscreen = false;
         query = "";
         filter = null;
         sel = 0;
@@ -217,15 +220,41 @@
     await reload();
   }
 
-  /** `alternate` 为 true（Shift+Enter）时使用与默认相反的格式。 */
-  async function paste(row: Row | undefined, alternate = false) {
-    if (!row) return;
+  /** `alternate` 为 true（Shift+Enter）时使用与默认相反的格式。返回是否实际粘贴并隐藏了弹窗。 */
+  async function paste(row: Row | undefined, alternate = false): Promise<boolean> {
+    if (!row) return false;
     try {
       const { pasted } =
         row.kind === "snippet" ? await pasteSnippet(row.item.id) : await pasteClip(row.item.id, plainDefault !== alternate);
       if (!pasted) showToast("已复制到剪贴板");
+      return pasted;
     } catch (e) {
       showToast(String(e), true);
+      return false;
+    }
+  }
+
+  function closePreview() {
+    const wasImage = preview?.kind === "clip" && isImage(preview.item);
+    imageFullscreen = false;
+    preview = null;
+    if (wasImage) {
+      setPopupPreview({ mode: "restore" }).catch(() => {});
+    }
+    searchEl?.focus();
+  }
+
+  async function pasteFromPreview(row: Row, alternate = false) {
+    const wasImage = row.kind === "clip" && isImage(row.item);
+    const pasted = await paste(row, alternate);
+    imageFullscreen = false;
+    preview = null;
+    // 真正粘贴时后端 hide_popup 已经隐藏并重置窗口尺寸，避免先缩回闪烁；仅复制时弹窗保持可见，需要恢复原尺寸
+    if (!pasted) {
+      if (wasImage) {
+        setPopupPreview({ mode: "restore" }).catch(() => {});
+      }
+      searchEl?.focus();
     }
   }
 
@@ -389,15 +418,23 @@
     // 输入法组字期间的按键（如回车上屏、Esc 取消候选）交给输入法处理
     if (e.isComposing || e.keyCode === 229) return;
     if (preview) {
-      if (e.key === "Escape" || e.key === " ") {
+      const previewingImage = preview.kind === "clip" && isImage(preview.item);
+      if (previewingImage && !e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "f" || e.key === "F" || e.key === "F11")) {
         e.preventDefault();
-        preview = null;
-        searchEl?.focus();
+        imageFullscreen = !imageFullscreen;
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        if (previewingImage && imageFullscreen) {
+          imageFullscreen = false;
+        } else {
+          closePreview();
+        }
+      } else if (e.key === " ") {
+        e.preventDefault();
+        closePreview();
       } else if (e.key === "Enter") {
         e.preventDefault();
-        const row = preview;
-        preview = null;
-        paste(row, e.shiftKey);
+        pasteFromPreview(preview, e.shiftKey);
       }
       return;
     }
@@ -613,18 +650,17 @@
 
   {#if preview}
     {@const row = preview}
-    {@const close = () => {
-      preview = null;
-      searchEl?.focus();
-    }}
-    {@const pasteIt = () => {
-      preview = null;
-      paste(row);
-    }}
+    {@const pasteIt = () => pasteFromPreview(row)}
     {#if row.kind === "clip"}
       {@const item = row.item}
       {#if isImage(item)}
-        <ImagePreview {item} onclose={close} onpaste={pasteIt} />
+        <ImagePreview
+          {item}
+          fullscreen={imageFullscreen}
+          onfullscreen={(next) => (imageFullscreen = next)}
+          onclose={closePreview}
+          onpaste={pasteIt}
+        />
       {:else}
         <TextPreview
           source="clip"
@@ -634,7 +670,7 @@
           sub={[item.sourceApp, ago(item.lastCopiedAt, now)].filter(Boolean).join(" · ")}
           mono={item.kind === "files"}
           {query}
-          onclose={close}
+          onclose={closePreview}
           onpaste={pasteIt}
         />
       {/if}
@@ -646,7 +682,7 @@
         title={row.item.title}
         sub={`常用片段 · 更新于 ${ago(row.item.updatedAt, now)}`}
         {query}
-        onclose={close}
+        onclose={closePreview}
         onpaste={pasteIt}
       />
     {/if}
