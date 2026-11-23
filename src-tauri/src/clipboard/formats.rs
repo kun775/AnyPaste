@@ -7,6 +7,8 @@ pub struct Formats {
     pub html: Option<NonZeroU32>,
     pub rtf: Option<NonZeroU32>,
     pub png: Option<NonZeroU32>,
+    /// Qt 等跨平台框架有时使用 MIME 名注册 PNG 格式。
+    pub image_png: Option<NonZeroU32>,
     /// Windows 约定的隐私标记：密码管理器等程序用它声明内容不应被记录。
     pub exclude: Option<NonZeroU32>,
     pub can_include: Option<NonZeroU32>,
@@ -21,6 +23,7 @@ pub fn formats() -> &'static Formats {
         html: raw::register_format("HTML Format"),
         rtf: raw::register_format("Rich Text Format"),
         png: raw::register_format("PNG"),
+        image_png: raw::register_format("image/png"),
         exclude: raw::register_format("ExcludeClipboardContentFromMonitorProcessing"),
         can_include: raw::register_format("CanIncludeInClipboardHistory"),
         viewer_ignore: raw::register_format("Clipboard Viewer Ignore"),

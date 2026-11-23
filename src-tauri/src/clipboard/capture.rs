@@ -137,11 +137,16 @@ pub fn prepare(
 /// 可生成预览的图片文件扩展名。
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "bmp", "webp"];
 
+pub(super) fn is_image_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| IMAGE_EXTS.iter().any(|e| ext.eq_ignore_ascii_case(e)))
+}
+
 /// 为单个图片文件保存 PNG 副本并生成缩略图，返回（副本文件名, 缩略图）。
 /// 只是附加的预览：不是图片、过大或解码失败时返回 `None`，条目仍按文件记录。
 fn image_file_preview(path: &Path, images_dir: &Path, max_item_bytes: usize) -> Option<(String, Vec<u8>)> {
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    if !IMAGE_EXTS.contains(&ext.as_str()) {
+    if !is_image_path(path) {
         return None;
     }
     let result = (|| -> anyhow::Result<Option<(String, Vec<u8>)>> {

@@ -1,16 +1,22 @@
-use std::num::NonZeroU32;
+use std::{num::NonZeroU32, path::Path};
 
 use anyhow::Context;
 use clipboard_win::{formats, raw};
 use image::ImageFormat;
 
 use super::{
-    capture::Captured,
+    capture::{is_image_path, Captured},
     formats::{avail, formats as registered, open_with_retry, Formats},
 };
 
+/// 截图工具（如 PixPin）导出临时图片文件时还可能使用这些扩展名，实际像素由剪贴板位图/PNG 读取。
+const EXTRA_IMAGE_EXTS: &[&str] = &["avif", "tif", "tiff"];
+
 /// 读取当前剪贴板。返回 `None` 表示内容被标记为隐私、为空或格式不支持。
-/// 优先级：文件列表 > 文本（含 HTML/RTF）> 图片。Office 复制文字时也会附带位图，所以文本优先于图片。
+/// 优先级：文件列表 > 文本（含 HTML/RTF）> 图片。
+/// 特例：PixPin 等截图工具复制图片时会同时写入图片数据与单个临时图片文件（`CF_HDROP`），
+/// 此时优先按图片记录；资源管理器复制图片文件不会附带图片数据，仍按文件记录。
+/// Office 复制文字时也会附带位图，所以文本仍优先于图片。
 pub fn read() -> anyhow::Result<Option<Captured>> {
     let _guard = open_with_retry()?;
     let f = registered();
@@ -22,7 +28,16 @@ pub fn read() -> anyhow::Result<Option<Captured>> {
     if raw::is_format_avail(formats::CF_HDROP) {
         let mut files = Vec::new();
         raw::get_file_list(&mut files).context("读取文件列表失败")?;
-        return Ok((!files.is_empty()).then_some(Captured::Files(files)));
+        if !files.is_empty() {
+            if is_single_image_file(&files) {
+                match read_image(f) {
+                    Ok(Some(image)) => return Ok(Some(image)),
+                    Ok(None) => {}
+                    Err(e) => log::warn!("剪贴板同时包含图片与文件，读取图片失败，回退按文件处理: {e:#}"),
+                }
+            }
+            return Ok(Some(Captured::Files(files)));
+        }
     }
 
     if raw::is_format_avail(formats::CF_UNICODETEXT) {
@@ -38,16 +53,38 @@ pub fn read() -> anyhow::Result<Option<Captured>> {
         }
     }
 
-    if let Some(bytes) = read_bytes(f.png) {
-        return Ok(Some(Captured::Image { bytes, format: ImageFormat::Png }));
+    read_image(f)
+}
+
+fn read_image(f: &Formats) -> anyhow::Result<Option<Captured>> {
+    for fmt in [f.png, f.image_png] {
+        if let Some(bytes) = read_bytes(fmt) {
+            if !bytes.is_empty() {
+                return Ok(Some(Captured::Image { bytes, format: ImageFormat::Png }));
+            }
+        }
     }
-    if raw::is_format_avail(formats::CF_DIB) || raw::is_format_avail(formats::CF_BITMAP) {
+    if raw::is_format_avail(formats::CF_DIB)
+        || raw::is_format_avail(formats::CF_DIBV5)
+        || raw::is_format_avail(formats::CF_BITMAP)
+    {
         let mut bytes = Vec::new();
         raw::get_bitmap(&mut bytes).context("读取位图失败")?;
         return Ok(Some(Captured::Image { bytes, format: ImageFormat::Bmp }));
     }
-
     Ok(None)
+}
+
+fn is_single_image_file(files: &[String]) -> bool {
+    let [single] = files else {
+        return false;
+    };
+    let path = Path::new(single);
+    is_image_path(path)
+        || path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|ext| EXTRA_IMAGE_EXTS.iter().any(|e| ext.eq_ignore_ascii_case(e)))
 }
 
 fn is_private(f: &Formats) -> bool {
@@ -76,4 +113,19 @@ fn read_html(format: Option<NonZeroU32>) -> Option<String> {
 fn trim_nul(bytes: &[u8]) -> &[u8] {
     let end = bytes.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
     &bytes[..end]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn single_image_file_detection() {
+        assert!(is_single_image_file(&["C:\\Temp\\PixPin_2026-11-23.png".into()]));
+        assert!(is_single_image_file(&["C:\\Temp\\shot.JPG".into()]));
+        assert!(is_single_image_file(&["C:\\Temp\\shot.avif".into()]));
+        assert!(!is_single_image_file(&[]));
+        assert!(!is_single_image_file(&["C:\\Temp\\a.txt".into()]));
+        assert!(!is_single_image_file(&["C:\\Temp\\a.png".into(), "C:\\Temp\\b.png".into()]));
+    }
 }

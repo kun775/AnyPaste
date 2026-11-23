@@ -116,6 +116,31 @@ mod system_tests {
             assert_eq!((back.width(), back.height()), (64, 32));
         });
     }
+
+    #[test]
+    #[ignore]
+    fn image_with_single_image_hdrop_reads_as_image() {
+        with_saved_clipboard(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let png_path = dir.path().join("PixPin_test.png");
+            let img = image::RgbaImage::from_pixel(32, 16, image::Rgba([40, 80, 120, 255]));
+            img.save(&png_path).unwrap();
+            let png_bytes = fs::read(&png_path).unwrap();
+            let path_str = png_path.display().to_string();
+
+            {
+                let _guard = formats::open_with_retry().unwrap();
+                raw::empty().unwrap();
+                raw::set_file_list_with(&[path_str], clipboard_win::options::NoClear).unwrap();
+                if let Some(fmt) = formats::formats().png {
+                    raw::set_without_clear(fmt.get(), &png_bytes).unwrap();
+                }
+            }
+
+            let captured = reader::read().unwrap().unwrap();
+            assert!(matches!(captured, super::capture::Captured::Image { .. }));
+        });
+    }
 }
 
 #[cfg(windows)]
