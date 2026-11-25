@@ -384,7 +384,7 @@ export function installMock(window: "popup" | "settings") {
           return { temp: visible("temp", null).length, perm: visible("perm", null).length, bytes: 18_400_000 };
         case "app_info":
           return {
-            version: "0.6.2-dev",
+            version: "0.6.3-dev",
             dataDir: "C:\\Users\\me\\AppData\\Roaming\\AnyPaste",
             logDir: "C:\\Users\\me\\AppData\\Roaming\\AnyPaste\\logs",
             repoUrl: "https://github.com/kun775/AnyPaste",
@@ -401,8 +401,8 @@ export function installMock(window: "popup" | "settings") {
             checking: false,
             lastCheckedAt: Date.now(),
             available: {
-              version: "0.6.3",
-              notes: "- 修复 PixPin 等截图工具复制图片被识别为文件的问题\n- 图片预览默认按原图尺寸展开并新增全屏预览",
+              version: "0.6.4",
+              notes: "- 过滤微信输入法临时剪贴板缓存回写，避免截图产生重复且无效的 *_d.png 记录\n- 原文件已清理的图片文件条目支持自动回退按图片粘贴",
               date: null,
             },
           };

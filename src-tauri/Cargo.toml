@@ -1,6 +1,6 @@
 [package]
 name = "anypaste"
-version = "0.6.2"
+version = "0.6.3"
 description = "本地剪贴板历史"
 edition = "2021"
 rust-version = "1.90"
