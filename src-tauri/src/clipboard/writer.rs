@@ -65,7 +65,16 @@ pub fn write(content: ClipContent, plain: bool, images_dir: &Path) -> anyhow::Re
 fn payload(content: ClipContent, plain: bool, images_dir: &Path) -> anyhow::Result<Payload> {
     let text = content.text.unwrap_or_default();
     Ok(match content.kind {
-        ClipKind::Files if !plain => Payload::Files(text.lines().filter(|l| !l.is_empty()).map(String::from).collect()),
+        ClipKind::Files if !plain => {
+            let paths: Vec<String> = text.lines().filter(|l| !l.is_empty()).map(String::from).collect();
+            // 微信等程序复制的图片文件在临时目录被清理后原路径失效，回退使用采集时保存的 PNG 副本按图片粘贴
+            if paths.iter().any(|p| !Path::new(p).exists()) {
+                if let Some(file) = content.image_file.as_deref().filter(|f| images_dir.join(f).is_file()) {
+                    return image_payload(file, images_dir);
+                }
+            }
+            Payload::Files(paths)
+        }
         ClipKind::Text | ClipKind::Rich | ClipKind::Files => {
             if plain {
                 Payload::Text { text, html: None, rtf: None }
@@ -75,13 +84,58 @@ fn payload(content: ClipContent, plain: bool, images_dir: &Path) -> anyhow::Resu
         }
         ClipKind::Image => {
             let file = content.image_file.context("图片条目缺少文件")?;
-            let path = images_dir.join(&file);
-            let png = fs::read(&path).with_context(|| format!("读取图片失败 {}", path.display()))?;
-            let img = image::load_from_memory_with_format(&png, ImageFormat::Png).context("无法解码图片")?;
-            let mut bmp = Vec::new();
-            // 24 位 BMP 兼容性最好；透明度由 PNG 格式承载
-            DynamicImage::ImageRgb8(img.to_rgb8()).write_to(&mut Cursor::new(&mut bmp), ImageFormat::Bmp)?;
-            Payload::Image { png, dib: bmp.split_off(BMP_FILE_HEADER) }
+            return image_payload(&file, images_dir);
         }
     })
+}
+
+fn image_payload(file: &str, images_dir: &Path) -> anyhow::Result<Payload> {
+    let path = images_dir.join(file);
+    let png = fs::read(&path).with_context(|| format!("读取图片失败 {}", path.display()))?;
+    let img = image::load_from_memory_with_format(&png, ImageFormat::Png).context("无法解码图片")?;
+    let mut bmp = Vec::new();
+    // 24 位 BMP 兼容性最好；透明度由 PNG 格式承载
+    DynamicImage::ImageRgb8(img.to_rgb8()).write_to(&mut Cursor::new(&mut bmp), ImageFormat::Bmp)?;
+    Ok(Payload::Image { png, dib: bmp.split_off(BMP_FILE_HEADER) })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{Rgba, RgbaImage};
+
+    #[test]
+    fn deleted_image_file_falls_back_to_saved_png() {
+        let dir = tempfile::tempdir().unwrap();
+        let images = dir.path().join("images");
+        fs::create_dir_all(&images).unwrap();
+        RgbaImage::from_pixel(16, 8, Rgba([10, 20, 30, 255]))
+            .save(images.join("saved.png"))
+            .unwrap();
+
+        let existing = dir.path().join("alive.png");
+        fs::write(&existing, "placeholder").unwrap();
+        let alive = ClipContent {
+            kind: ClipKind::Files,
+            text: Some(existing.display().to_string()),
+            html: None,
+            rtf: None,
+            image_file: Some("saved.png".into()),
+        };
+        assert!(matches!(payload(alive, false, &images).unwrap(), Payload::Files(_)));
+
+        let missing_path = dir.path().join("1795569871982_d.png").display().to_string();
+        let missing = ClipContent {
+            kind: ClipKind::Files,
+            text: Some(missing_path.clone()),
+            html: None,
+            rtf: None,
+            image_file: Some("saved.png".into()),
+        };
+        assert!(matches!(payload(missing.clone(), false, &images).unwrap(), Payload::Image { .. }));
+        assert!(matches!(
+            payload(missing, true, &images).unwrap(),
+            Payload::Text { text, html: None, rtf: None } if text == missing_path
+        ));
+    }
 }

@@ -29,6 +29,9 @@ pub fn read() -> anyhow::Result<Option<Captured>> {
         let mut files = Vec::new();
         raw::get_file_list(&mut files).context("读取文件列表失败")?;
         if !files.is_empty() {
+            if is_transient_clipboard_files(&files) {
+                return Ok(None);
+            }
             if is_single_image_file(&files) {
                 match read_image(f) {
                     Ok(Some(image)) => return Ok(Some(image)),
@@ -73,6 +76,25 @@ fn read_image(f: &Formats) -> anyhow::Result<Option<Captured>> {
         return Ok(Some(Captured::Image { bytes, format: ImageFormat::Bmp }));
     }
     Ok(None)
+}
+
+/// 微信输入法后台（`wetype_server.exe`）会在截图或复制图片约 1 秒后将位图转存至
+/// `WeType\ClipboardTmp\<timestamp>_d.png` 并把剪贴板改写为仅含该路径的 `CF_HDROP`；
+/// 该目录只保留最新缓存，旧文件很快会被删除，跳过此类内部缓存回写以避免产生重复且失效的文件记录。
+fn is_transient_clipboard_files(files: &[String]) -> bool {
+    !files.is_empty() && files.iter().all(|f| is_wetype_clipboard_tmp(Path::new(f)))
+}
+
+fn is_wetype_clipboard_tmp(path: &Path) -> bool {
+    let mut prev_wetype = false;
+    for comp in path.parent().into_iter().flat_map(Path::components) {
+        let s = comp.as_os_str().to_str();
+        if prev_wetype && s.is_some_and(|c| c.eq_ignore_ascii_case("ClipboardTmp")) {
+            return true;
+        }
+        prev_wetype = s.is_some_and(|c| c.eq_ignore_ascii_case("WeType"));
+    }
+    false
 }
 
 fn is_single_image_file(files: &[String]) -> bool {
@@ -127,5 +149,21 @@ mod tests {
         assert!(!is_single_image_file(&[]));
         assert!(!is_single_image_file(&["C:\\Temp\\a.txt".into()]));
         assert!(!is_single_image_file(&["C:\\Temp\\a.png".into(), "C:\\Temp\\b.png".into()]));
+    }
+
+    #[test]
+    fn transient_wetype_clipboard_files_detection() {
+        let wetype = "C:\\Users\\u\\AppData\\LocalLow\\Tencent\\WeType\\ClipboardTmp\\1795569871982_d.png";
+        assert!(is_transient_clipboard_files(&[wetype.into()]));
+        assert!(is_transient_clipboard_files(&[
+            "D:/data/wetype/clipboardtmp/sub/1795569871982_d.png".into()
+        ]));
+        assert!(!is_transient_clipboard_files(&[]));
+        assert!(!is_transient_clipboard_files(&["C:\\Temp\\PixPin_2026-11-23.png".into()]));
+        assert!(!is_transient_clipboard_files(&["C:\\Users\\u\\Desktop\\1795569871982_d.png".into()]));
+        assert!(!is_transient_clipboard_files(&[
+            wetype.into(),
+            "C:\\Users\\u\\Desktop\\normal.png".into(),
+        ]));
     }
 }

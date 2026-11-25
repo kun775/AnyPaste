@@ -141,6 +141,27 @@ mod system_tests {
             assert!(matches!(captured, super::capture::Captured::Image { .. }));
         });
     }
+
+    #[test]
+    #[ignore]
+    fn wetype_clipboard_tmp_hdrop_is_skipped() {
+        with_saved_clipboard(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let tmp_dir = dir.path().join("Tencent").join("WeType").join("ClipboardTmp");
+            fs::create_dir_all(&tmp_dir).unwrap();
+            let png_path = tmp_dir.join("1795569871982_d.png");
+            let img = image::RgbaImage::from_pixel(16, 16, image::Rgba([40, 80, 120, 255]));
+            img.save(&png_path).unwrap();
+
+            {
+                let _guard = formats::open_with_retry().unwrap();
+                raw::empty().unwrap();
+                raw::set_file_list_with(&[png_path.display().to_string()], clipboard_win::options::NoClear).unwrap();
+            }
+
+            assert!(reader::read().unwrap().is_none());
+        });
+    }
 }
 
 #[cfg(windows)]
